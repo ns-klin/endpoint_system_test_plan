@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.DS_Store
+html_output/
+mermaid_images/
+tc_export/
+*.pyc

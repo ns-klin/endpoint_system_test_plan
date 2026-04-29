@@ -1,0 +1,760 @@
+# 06. Client Status Reporting
+
+**Escalation Bug Count**: 8 | **Regression**: 4 (50%) | **Day-1**: 2 (25%) | **Test Gap**: 4 (50%)
+
+📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1851702887#gid=1851702887)**
+
+> This chapter covers how NSClient reports device status, events, and heartbeats to the Management Plane. It traces the complete data flow from event triggers through message preparation, caching, and delivery to both the Legacy Pipeline (addonman API) and the DEM Pipeline (Global Event Forwarder). All 8 escalation bugs are mapped to specific failure points in the status reporting flow, with mermaid diagrams annotated at each known breakage.
+
+---
+
+## Overview
+
+The admin console needs real-time visibility into every managed device: is the tunnel up, what version is installed, is FailClose active, what is the NPA status, and when was the device last seen? Without status reporting, the fleet becomes invisible -- admins cannot diagnose connectivity issues, verify policy compliance, or detect offline devices. Status reporting is the telemetry backbone that connects every NSClient endpoint to the Management Plane.
+
+The highest risk area is the **dual-pipeline transition** between Legacy (addonman) and DEM (GEF): when one pipeline is disabled but the other is not fully operational, devices disappear from the admin console (ENG-420917, ENG-420918). The second major risk is **DEM data integrity**: the `client_install_time` field corruption (ENG-429954) and tenant ID reset (ENG-637576) both caused customer-visible data loss in the DEM pipeline. The third gap is **event generation completeness**: tunnel down events were silently dropped for certain disconnect scenarios (ENG-528750), and uninstall status was not posted when `clientEncryptBranding` was enabled (ENG-671884).
+
+Four of the eight bugs (50%) are regressions, meaning they were introduced by changes to existing working code. This is a significantly higher regression rate than the overall project average (26%), indicating that the status reporting module is fragile and under-tested during feature development.
+
+### Design Decision: Dual-Pipeline Architecture
+
+NSClient maintains two parallel status reporting pipelines:
+
+1. **Legacy Pipeline** -- Posts status JSON to addonman REST API (`/v2/update/clientstatus`, `/v5/update/clientstatus`, or `/v7/update/clientstatus`). This was the original status mechanism. It can be disabled via `disableLegacyClientStatus` config flag.
+
+2. **DEM Pipeline** -- Posts the same status data (enriched with GEF metadata) to the Global Event Forwarder (GEF) via `v1/clientstatus` or `v1/clientstatus/batch`. This is the modern pipeline that also carries DEM metrics (tunnel RTT, traceroute, device health, app probes).
+
+Both pipelines are enabled by default; the transition from legacy to DEM-only is controlled by feature flags in the client config. The dual-pipeline approach ensures backward compatibility while the fleet migrates, but creates a risk window where pipeline flag misconfiguration causes device invisibility.
+
+### Design Decision: Event Caching with Bounded Queue
+
+When the MP or GEF is unreachable, events are cached to a local `eventscache.json` file with a bounded queue (max 12 events for legacy, file-based cache for DEM). On reconnect, cached events are drained in order. This prevents data loss during brief outages but caps disk usage. If the queue overflows, the oldest event is evicted (FIFO). The cache file is integrity-checked with a digest.
+
+---
+
+## Dual-Pipeline Architecture (All Platforms)
+
+The following diagram shows the end-to-end status reporting architecture, annotated with all 8 confirmed escalation bugs at their respective failure points. The dual-pipeline design means that every status event must successfully traverse at least one pipeline for the device to remain visible in the admin console.
+
+```mermaid
+flowchart TD
+    subgraph Triggers
+        T1[Tunnel Connect/Disconnect]
+        T2[Enrollment/Unenrollment]
+        T3[FailClose State Change]
+        T4[Device Classification Change]
+        T5[System Power Up/Down]
+        T6[Install/Upgrade/Uninstall]
+        T7[DEM Heartbeat Timer - 5 min]
+        T8[Admin Enable/Disable]
+    end
+
+    subgraph ClientStatusHandler
+        PREP[prepareMessage]
+        PREPDEM[prepareMessageForDem]
+    end
+
+    subgraph Legacy Pipeline
+        POST[postClientStatus via addonman API]
+        CACHE[CeventCache - max 12 events]
+        BATCH[consumeEventsInBatch]
+    end
+
+    subgraph DEM Pipeline
+        DEMCB[CDemMgr::updateClientStatus callback]
+        DEMTASK[nsDemClientStatusTask]
+        DEMCACHE[File-based DEM cache]
+        POSTMAN[nsDemPostmanTask]
+        GEF[Global Event Forwarder - GEF]
+    end
+
+    subgraph Backend
+        MP[Management Plane - addonman]
+        GEFBE[GEF Backend]
+        DEVICES[Admin Console - Devices Page]
+    end
+
+    T1 & T2 & T3 & T4 & T5 & T6 & T8 --> PREP
+    T7 --> PREPDEM
+
+    PREP --> POST
+    PREP -->|on failure| CACHE
+    CACHE -->|on reconnect| BATCH --> POST
+    POST --> MP
+
+    PREP --> PREPDEM
+    PREPDEM -->|callClientStatusCallback| DEMCB
+    DEMCB --> DEMTASK
+    DEMTASK -->|on failure| DEMCACHE
+    DEMCACHE --> POSTMAN
+    DEMTASK & POSTMAN --> GEF --> GEFBE
+
+    MP --> DEVICES
+    GEFBE --> DEVICES
+
+    BUG_420917["🔴 BUG ENG-420917<br/>Devices missing from admin UI<br/>after backend migration"]
+    BUG_420918["🔴 BUG ENG-420918<br/>Device not visible on<br/>Devices Page"]
+    BUG_528750["🔴 BUG ENG-528750<br/>Tunnel down events<br/>not generated"]
+    BUG_429954["🔴 BUG ENG-429954<br/>client_install_time changes<br/>unexpectedly in DEM"]
+    BUG_637576["🔴 BUG ENG-637576<br/>DEM tenant ID reset to 0<br/>during config rotation"]
+    BUG_601667["🔴 BUG ENG-601667<br/>Wrong version in status<br/>after rollback"]
+    BUG_534944["🔴 BUG ENG-534944<br/>Monitored users not showing<br/>in DEM dashboard"]
+    BUG_671884["🔴 BUG ENG-671884<br/>Mac uninstall status<br/>not posted to backend"]
+
+    DEVICES -.-> BUG_420917
+    DEVICES -.-> BUG_420918
+    T1 -.-> BUG_528750
+    PREPDEM -.-> BUG_429954
+    PREPDEM -.-> BUG_637576
+    T6 -.-> BUG_601667
+    GEFBE -.-> BUG_534944
+    T6 -.-> BUG_671884
+
+    RISK_PIPELINE["🟡 Warning: Pipeline flag mismatch<br/>Legacy disabled before DEM ready"]
+    RISK_CACHE["🟡 Warning: Event cache overflow<br/>Critical events evicted under FIFO"]
+    RISK_TIMESTAMP["🟡 Warning: Timestamp collision<br/>Backend ignores duplicate timestamps"]
+
+    POST -.-> RISK_PIPELINE
+    CACHE -.-> RISK_CACHE
+    PREP -.-> RISK_TIMESTAMP
+```
+
+### Node Risk Assessment
+
+| Node | Risk | Assessment |
+|------|------|------------|
+| Tunnel Connect/Disconnect trigger | 🔴 High | **ENG-528750** -- tunnel down events silently dropped for certain disconnect scenarios |
+| Install/Upgrade/Uninstall trigger | 🔴 High | **ENG-601667** -- wrong version reported after rollback; **ENG-671884** -- Mac uninstall status not posted |
+| prepareMessage | 🟡 Medium | Event string derivation depends on tunnel state machine; edge cases exist |
+| prepareMessageForDem | 🔴 High | **ENG-429954** -- client_install_time corruption; **ENG-637576** -- tenant ID reset to 0 |
+| postClientStatus via addonman API | 🟡 Medium | Pipeline flag mismatch risk when `disableLegacyClientStatus` is set |
+| CeventCache | 🟡 Medium | FIFO eviction can drop critical FailClose events during prolonged outage |
+| CDemMgr::updateClientStatus | 🟡 Medium | Depends on valid client certificate for mTLS auth |
+| nsDemClientStatusTask | 🔴 High | **ENG-534944** -- users not showing in DEM dashboard after upgrade miss |
+| Admin Console Devices Page | 🔴 High | **ENG-420917**, **ENG-420918** -- devices missing after backend migration |
+| GEF Backend | 🟡 Medium | Predicted: payload validation failures when tenant ID is corrupted |
+
+---
+
+## Event Reporting Flow (All Platforms)
+
+Events are triggered by discrete state changes. Each event carries a specific `event` string and `actor` string that identifies what happened and what caused it. The event generation logic contains the failure point for ENG-528750, where certain tunnel disconnect scenarios did not trigger the expected status event.
+
+```mermaid
+flowchart TD
+    subgraph "Tunnel Events via sendClientStatus"
+        TE1[Tunnel Up] -->|event: 'Tunnel Up'| VALIDATE
+        TE2[Tunnel Down - Error] -->|event: 'Tunnel down due to error'| VALIDATE
+        TE3[User Disabled] -->|event: 'User Disabled'| VALIDATE
+        TE4[Admin Disabled] -->|event: 'Admin Disabled'| VALIDATE
+        TE5[Network Change] -->|event: 'Change in network'| VALIDATE
+        TE6[FailClose] -->|event: 'Fail Closed'| VALIDATE
+    end
+
+    subgraph "Install Events via handleInstallStatus"
+        IE1[Installed] -->|event: 'Installed'| VALIDATE
+        IE2[Upgraded] -->|event: 'Upgraded'| VALIDATE
+        IE3[Upgrade Failed] -->|event: 'Upgrade Failure'| VALIDATE
+        IE4[Uninstalled] -->|event: 'Uninstalled'| VALIDATE
+        IE5[Rollback Success] -->|event: 'Rollback Success'| VALIDATE
+    end
+
+    VALIDATE{Validate:<br/>tunnelStatus not<br/>CONNECTING/DISCONNECTING?}
+    VALIDATE -->|Rejected| DROP[Event silently dropped]
+    VALIDATE -->|Accepted| TIMESTAMP[Bump monotonic timestamp]
+    TIMESTAMP --> DERIVE[Derive eventStr + actorStr]
+    DERIVE --> FC_CHK{FailClose active?}
+    FC_CHK -->|Yes| OVERRIDE[Override status = 'Fail Closed']
+    FC_CHK -->|No| KEEP[Keep original status]
+    OVERRIDE --> SEND_LEGACY[prepareMessage for Legacy]
+    KEEP --> SEND_LEGACY
+    SEND_LEGACY --> SEND_DEM[prepareMessageForDem for DEM]
+    SEND_DEM --> DONE[Event dispatched to both pipelines]
+
+    BUG_528750_2["🔴 BUG ENG-528750<br/>Tunnel down event not generated<br/>for specific disconnect case"]
+    BUG_601667_2["🔴 BUG ENG-601667<br/>Wrong client version<br/>in rollback event"]
+
+    TE2 -.-> BUG_528750_2
+    IE5 -.-> BUG_601667_2
+
+    style DROP fill:#999,color:#fff
+    style DONE fill:#4CAF50,color:#fff
+```
+
+### Actor Model
+
+Each event identifies its cause through an `actor` field. The actor model allows the admin console to distinguish between user-initiated actions, system-triggered events, and admin commands.
+
+| Actor String | Enum | Context |
+|-------------|------|---------|
+| `System` | `ACTOR_SYSTEM` | Automatic system action |
+| `User` | `ACTOR_USER` | User clicked enable/disable |
+| `Admin` | `ACTOR_ADMIN` | Admin changed policy |
+| `Reboot` | `ACTOR_REBOOT` | System reboot detected |
+| `Network joined` | `ACTOR_NETWORK_JOINED` | New network connection |
+| `System wakeup` | `ACTOR_SYSTEM_WAKEUP` | Wake from sleep/standby |
+| `Service started` | `ACTOR_SERVICE_STARTED` | Service (re)start |
+
+---
+
+## Heartbeat Flow (All Platforms)
+
+The heartbeat flow is the periodic "I am alive" signal. Both legacy and DEM heartbeats are independent timers. The DEM heartbeat fires every 5 minutes (hardcoded) while the legacy heartbeat uses a configurable interval (default 30 minutes, minimum wait 5 minutes). The FailClose override logic within the heartbeat is critical: without it, FailClose devices would appear as "Disabled" rather than "Fail Closed" in the admin console.
+
+```mermaid
+sequenceDiagram
+    participant SCH as Task Scheduler
+    participant SVC as stAgentSvc
+    participant CFG as CConfig
+    participant USR as CUserConfig
+    participant CSH as ClientStatusHandler
+    participant DEM as CDemMgr
+    participant GEF as Global Event Forwarder
+
+    Note over SCH: Every 5 minutes
+    SCH->>SVC: runScheduledTask(TASKID_DEM_HEARTBEAT)
+    SVC->>CFG: postDemHeartbeatEvent()
+
+    alt enableDemClientStatus == false OR enableDemHeartbeat == false
+        CFG-->>SVC: return (skip)
+    else Both flags enabled
+        CFG->>USR: handleClientStatusDemHeartBeat(SEND_HEARTBEAT)
+        USR->>CSH: handleClientStatusDemHeartbeat(userConfigCommon)
+        CSH->>CSH: Collect tunnel status, NPA status, DC status
+        CSH->>CSH: Check FailClose override
+        CSH->>CSH: prepareMessageForDem()
+        CSH->>DEM: callClientStatusCallback(pt, sessionId)
+        DEM->>DEM: Format JSON, add GEF metadata
+        DEM->>GEF: sendToDemClientStatusTask(ctx, json)
+        alt GEF reachable
+            GEF-->>DEM: 200 OK
+        else GEF unreachable
+            DEM->>DEM: saveEventToCache(payload)
+            Note over DEM: Postman task retries later
+        end
+    end
+```
+
+### FailClose Override in Heartbeat
+
+When FailClose is active and the tunnel is in an error state, the heartbeat logic overrides the `clientStatus` field from "Disabled" to "Fail Closed". This ensures the admin console shows the correct FailClose state.
+
+```mermaid
+flowchart TD
+    HB["Heartbeat status calculation"] --> FC_CHK{FailClose active?}
+    FC_CHK -->|No| KEEP["Keep original clientStatus"]
+
+    FC_CHK -->|Yes| TUN_CHK{Tunnel status?}
+    TUN_CHK -->|DISCONNECTED_ERROR<br/>DISCONNECTED_ERROR_MODERN_STANDBY<br/>DISCONNECTED<br/>CONNECTING<br/>DISCONNECTED_FAIL_CLOSED| ALREADY{clientStatus already<br/>'Fail Closed'?}
+    TUN_CHK -->|Connected / Other| KEEP
+
+    ALREADY -->|Yes| KEEP
+    ALREADY -->|No| OVERRIDE["Override clientStatus<br/>= 'Fail Closed'"]
+
+    style FC_CHK fill:#2196F3,color:#fff
+    style TUN_CHK fill:#2196F3,color:#fff
+    style ALREADY fill:#2196F3,color:#fff
+```
+
+---
+
+## DEM Message Preparation Flow (All Platforms)
+
+The `prepareMessageForDem()` function is the single point where three of the eight bugs occur. This function builds the JSON payload for the DEM pipeline, pulling data from config objects, user configs, and tunnel state. The `client_install_time` field and `_tenant_id` field are both populated here, and both have been the source of customer-visible bugs.
+
+```mermaid
+flowchart TD
+    START[prepareMessageForDem called] --> GET_TENANT[getTenantId from config]
+    GET_TENANT --> CHK_TENANT{Tenant ID valid?}
+    CHK_TENANT -->|Empty or '0'| BUG_TENANT["🔴 BUG ENG-637576<br/>Tenant ID reset to 0<br/>during config rotation"]
+    CHK_TENANT -->|Valid| GET_INSTALL[Get client_install_time<br/>from appinstalltimestamp]
+
+    GET_INSTALL --> CHK_INSTALL{appinstalltimestamp<br/>exists in nsconfig.json?}
+    CHK_INSTALL -->|Missing after upgrade| BUG_INSTALL["🔴 BUG ENG-429954<br/>client_install_time changes<br/>on config rotation"]
+    CHK_INSTALL -->|Present| BUILD[Build DEM JSON payload]
+
+    BUILD --> ADD_HOST[Add host_info:<br/>hostname, os, device_make,<br/>serial_number, nsdeviceuid]
+    ADD_HOST --> ADD_USER[Add user_info:<br/>userkey, username,<br/>orgkey, DC status]
+    ADD_USER --> ADD_EVENT[Add last_seen_device_event:<br/>status, npa_status,<br/>event, actor, timestamp]
+    ADD_EVENT --> ADD_META[Add _gef_meta:<br/>timestamp, tenant_id,<br/>home_pop, service_id]
+    ADD_META --> CALLBACK[callClientStatusCallback]
+
+    CALLBACK --> DEM_MGR[CDemMgr processes message]
+    DEM_MGR --> SEND{GEF reachable?}
+    SEND -->|Yes| SUCCESS[Posted to GEF]
+    SEND -->|No| CACHE_DEM[Cache to DEM data dir]
+
+    DEM_MGR --> CHK_UPGRADE{Upgrade from<br/>version < R120?}
+    CHK_UPGRADE -->|Yes, missing appinstalltimestamp| BUG_534944["🔴 BUG ENG-534944<br/>Monitored users not showing<br/>after upgrade from old version"]
+    CHK_UPGRADE -->|No| SUCCESS
+
+    style SUCCESS fill:#4CAF50,color:#fff
+```
+
+### Node Risk Assessment: DEM Preparation
+
+| Node | Risk | Assessment |
+|------|------|------------|
+| getTenantId from config | 🔴 High | **ENG-637576** -- Token rotation corrupts tenant ID to "0" |
+| Get client_install_time | 🔴 High | **ENG-429954** -- Timestamp changes on config rotation |
+| Build DEM JSON payload | 🟡 Medium | Predicted: field type mismatch between string/numeric enums |
+| callClientStatusCallback | 🟡 Medium | Depends on valid client cert and user session |
+| CDemMgr processes message | 🔴 High | **ENG-534944** -- Missing appinstalltimestamp after upgrade |
+| GEF reachable check | 🟡 Medium | mTLS auth failure if client cert is expired |
+
+---
+
+## Event Caching and Failure Handling (All Platforms)
+
+The event caching mechanism prevents data loss during brief outages, but introduces its own failure modes: FIFO eviction can silently drop critical FailClose events, and cache file corruption after power loss can cause all cached events to be lost.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: init()
+
+    Idle --> Queuing: Event arrives, POST fails
+    Queuing --> Queuing: More events arrive
+    Queuing --> Draining: Tunnel reconnects / timer fires
+
+    Draining --> Idle: All events consumed
+    Draining --> Queuing: POST fails mid-drain
+
+    state Queuing {
+        [*] --> CheckSize
+        CheckSize --> Enqueue: size < MAX_EVENT_CACHE_SIZE (12)
+        CheckSize --> EvictOldest: size >= 12
+        EvictOldest --> Enqueue: pop_front, then push_back
+        Enqueue --> WriteToDisk: writetoEventCacheFile()
+    }
+
+    state Draining {
+        [*] --> ConsumeOne: consumeEvents()
+        ConsumeOne --> PostToMP: postClientStatus()
+        PostToMP --> ConsumeOne: success, next event
+        PostToMP --> ReinsertFront: failure, stop drain
+        ConsumeOne --> BatchPost: consumeEventsInBatch()
+        BatchPost --> ParseBatch: Accumulate up to 18KB
+        ParseBatch --> PostBatch: POST batch JSON
+        PostBatch --> ConsumeOne: success, next batch
+        PostBatch --> ReinsertAll: failure, reinsert all
+    }
+```
+
+**Key properties:**
+
+- **Max queue size:** 12 events (`MAX_EVENT_CACHE_SIZE`)
+- **Max batch payload:** 18 KB (`MAX_BATCH_PAYLOAD_SIZE`)
+- **Eviction policy:** FIFO -- oldest event is dropped when queue is full
+- **Persistence:** Events are written to `eventscache.json` with digest integrity check
+- **Batch mode:** When `clientStatusBatchSupport` is enabled, cached events are merged into a single `client_status` array and posted in one request
+
+---
+
+## Status Data Model
+
+### Legacy vs DEM Message Comparison
+
+The legacy message is a flat JSON posted to the addonman API, while the DEM message wraps the data with GEF metadata. Key differences create a risk of inconsistency between the two pipelines:
+
+| Field | Legacy | DEM |
+|-------|--------|-----|
+| Status values | String ("Enabled", "Disabled") | Numeric enum (0, 1, 2...) |
+| Event values | String ("Tunnel Up") | Numeric enum (17) |
+| Actor values | String ("System") | Numeric enum (0) |
+| OS | String ("Windows") | Numeric ID |
+| Wrapper | `client_status.` prefix | `_gef_meta` + flat fields |
+| Additional | -- | `client_install_time`, `device_id`, `user_info` |
+| Boolean format | Quoted `"true"` | Unquoted `true` (GEF requirement) |
+
+### The status_v2 Combined Status
+
+The `status_v2` field provides a combined view of both Internet Security and NPA services. The device shows as "Enabled" in the admin console if **either** Internet Security or NPA is active:
+
+```mermaid
+flowchart TD
+    START["Calculate status_v2"] --> UNINST{clientStatusChangeEvent<br/>== STATUS_UNINSTALLED?}
+    UNINST -->|Yes| V_UNINST["status_v2 = 'Uninstalled'"]
+
+    UNINST -->|No| ISS_CHK{clientStatus is<br/>'Enabled' or 'Backed off'?}
+    ISS_CHK -->|Yes| V_ENABLED["status_v2 = 'Enabled'<br/>Internet Security active"]
+
+    ISS_CHK -->|No| NPA_CHK{npaStatus == 'Disabled'?}
+    NPA_CHK -->|Yes| V_DISABLED["status_v2 = 'Disabled'<br/>Neither ISS nor NPA active"]
+    NPA_CHK -->|No| V_ENABLED2["status_v2 = 'Enabled'<br/>NPA is active"]
+
+    style UNINST fill:#2196F3,color:#fff
+    style ISS_CHK fill:#2196F3,color:#fff
+    style NPA_CHK fill:#2196F3,color:#fff
+    style V_ENABLED fill:#4CAF50,color:#fff
+    style V_ENABLED2 fill:#4CAF50,color:#fff
+```
+
+---
+
+## Install/Uninstall Status Reporting Flow (All Platforms)
+
+The install and uninstall status reporting flow has two confirmed bugs. ENG-601667 occurs during upgrade rollback, where the wrong client version is reported to the backend. ENG-671884 occurs on macOS when the `clientEncryptBranding` flag causes the uninstall status POST to fail because the branding file is decrypted too late in the uninstall sequence.
+
+```mermaid
+flowchart TD
+    INSTALL[Install/Upgrade/Uninstall Event] --> DETECT{Event type?}
+
+    DETECT -->|Installed| EVT_INSTALL[event = 'Installed']
+    DETECT -->|Upgraded| EVT_UPGRADE[event = 'Upgraded']
+    DETECT -->|Upgrade Failed| EVT_FAIL[event = 'Upgrade Failure']
+    DETECT -->|Rollback Success| EVT_ROLLBACK[event = 'Rollback Success']
+    DETECT -->|Uninstalled| EVT_UNINST[event = 'Uninstalled']
+
+    EVT_INSTALL --> GET_VER[Get client_version from binary]
+    EVT_UPGRADE --> GET_VER
+    EVT_FAIL --> GET_VER
+    EVT_ROLLBACK --> GET_VER
+    EVT_UNINST --> GET_VER
+
+    GET_VER --> POST_STATUS[handleInstallStatus]
+    POST_STATUS --> SEND_LEGACY[Send via Legacy Pipeline]
+    POST_STATUS --> SEND_DEM[Send via DEM Pipeline]
+
+    SEND_LEGACY --> MP_RECV[MP receives status]
+    SEND_DEM --> GEF_RECV[GEF receives status]
+
+    EVT_ROLLBACK -.-> BUG_601667_3["🔴 BUG ENG-601667<br/>Wrong version reported<br/>after rollback failure"]
+    EVT_UNINST -.-> BUG_671884["🔴 BUG ENG-671884<br/>Mac uninstall status not posted<br/>when clientEncryptBranding=1"]
+
+    RISK_OFFLINE["🟡 Warning: Uninstall event<br/>cached but never drained<br/>if service already stopped"]
+
+    EVT_UNINST -.-> RISK_OFFLINE
+
+    style MP_RECV fill:#4CAF50,color:#fff
+    style GEF_RECV fill:#4CAF50,color:#fff
+```
+
+---
+
+## Windows
+
+**Bug Count**: 5 | **Key Gaps**: Tunnel down event generation, DEM data integrity, rollback version reporting
+
+Windows has the most status reporting bugs due to its complex power management (AOAC/Modern Standby), multi-user VDI scenarios, and the WFP driver interaction during tunnel state changes. The `client_install_time` and `nsdeviceuid` fields have both caused device duplication and data inconsistency on Windows.
+
+### Windows-Specific: Power Event Handling
+
+On Windows, system power events have special timestamp handling that computes the actual boot time rather than using the current time:
+
+The `STATUS_SYSTEMPOWER_UP` event uses `GetTickCount64()` to calculate when the system actually started, ensuring the "System power-up" event timestamp reflects actual boot time. Windows also forwards power events to `WinDeviceStats` for DEM device health tracking.
+
+### Windows Bug Mapping
+
+| Bug ID | Summary | Root Cause | Flow Point | Severity |
+|--------|---------|------------|------------|----------|
+| [ENG-420917](https://netskope.atlassian.net/browse/ENG-420917) | Devices missing from admin UI | Backend migration + device status sync failure | Admin Console Devices Page | S2 |
+| [ENG-420918](https://netskope.atlassian.net/browse/ENG-420918) | Device not visible on Devices Page | Backend migration + device status sync failure | Admin Console Devices Page | S2 |
+| [ENG-429954](https://netskope.atlassian.net/browse/ENG-429954) | client_install_time changes unexpectedly | Config rotation overwrites appinstalltimestamp | prepareMessageForDem | S3 |
+| [ENG-528750](https://netskope.atlassian.net/browse/ENG-528750) | Tunnel down events not generated | Day-1: certain disconnect paths skip sendClientStatus | sendClientStatus trigger | S2 |
+| [ENG-601667](https://netskope.atlassian.net/browse/ENG-601667) | Wrong version after rollback | Rollback writes wrong version to status payload | handleInstallStatus | S3 |
+| [ENG-637576](https://netskope.atlassian.net/browse/ENG-637576) | DEM tenant ID reset to 0 | Token rotation during config update corrupts tenant ID | prepareMessageForDem | S2 |
+
+## macOS
+
+**Bug Count**: 3 (2 shared with Windows + 1 macOS-only) | **Key Gaps**: Uninstall status posting, DEM user visibility
+
+macOS shares the dual-pipeline architecture with Windows but has a unique failure point in the uninstall flow: when `clientEncryptBranding` is enabled, the uninstall status POST fails because the InstallerUtil needs to decrypt the branding file before it can post the uninstall event, but the decryption happens too late in the uninstall sequence.
+
+### macOS Bug Mapping
+
+| Bug ID | Summary | Root Cause | Flow Point | Severity |
+|--------|---------|------------|------------|----------|
+| [ENG-420917](https://netskope.atlassian.net/browse/ENG-420917) | Devices missing from admin UI | Backend migration issue | Admin Console | S2 |
+| [ENG-420918](https://netskope.atlassian.net/browse/ENG-420918) | Device not visible on Devices Page | Backend migration issue | Admin Console | S2 |
+| [ENG-534944](https://netskope.atlassian.net/browse/ENG-534944) | Monitored users not showing in DEM | Missing appinstalltimestamp after upgrade from < R120 | prepareMessageForDem | S2 |
+| [ENG-671884](https://netskope.atlassian.net/browse/ENG-671884) | Mac uninstall status not posted | clientEncryptBranding=1 breaks uninstall POST sequence | handleInstallStatus | S3 |
+
+## Linux
+
+**Bug Count**: 0 direct | **Key Gaps**: DEM support is partial, no device health
+
+Linux has partial DEM support -- client status and heartbeat work, but device health and app probes are not supported. The main risk on Linux is that status reporting code is shared with macOS but less tested, creating silent regression risk.
+
+## Android
+
+**Bug Count**: 0 direct | **Key Gaps**: Cached event version filter, battery-aware heartbeat
+
+Android has a unique cached event version filter that silently discards events from client versions older than 47 during queue drain. This prevents posting incompatible status messages after an upgrade from a very old version.
+
+## iOS
+
+**Bug Count**: 0 direct | **Key Gaps**: NE shim-only status, no DEM heartbeat
+
+iOS has the most limited status reporting support. The Network Extension (NE) shim provides basic tunnel status but does not support DEM client status, DEM heartbeat, device health, or app probes. Status events are generated by the NE shim and forwarded to the containing app for posting.
+
+## ChromeOS
+
+*No ChromeOS-specific client status bugs found in escalation data. ChromeOS shares the Android codebase for status reporting.*
+
+---
+
+## Backend
+
+**Bug Count**: 2 (ENG-420917, ENG-420918) | **Key Gaps**: Backend migration, device visibility
+
+The backend bugs are the most impactful in this chapter: they caused entire fleets of devices to disappear from the admin console after a backend migration. While the root cause was backend-side (device status sync failure during migration), client-side testing should verify device visibility after pipeline flag changes.
+
+## Automation Coverage Summary
+
+The golden regression suite at `/Users/klin/Documents/PyLark/Development/nsclient_golden_regression_suite/golden_regression/tests/features/client_status/` contains basic P0 tests:
+
+| Test | Description | Coverage | Status |
+|------|-------------|----------|--------|
+| `test_02_client_status_events` (C1159874) | Verify Installed/Disabled and Tunnel Up/Enabled events posted to WebUI | Basic event posting | ✅ Covered |
+| `test_08_user_specific_conf_files` (C1159873) | Verify nsuser.conf reflects enable/disable status | Local config file | ✅ Covered |
+
+**Summary**: Only 2 of 27 test cases have automation coverage. Full test case details are in the [Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1851702887#gid=1851702887).
+
+---
+
+## Cross-Flow Interactions
+
+### Status Reporting x Tunnel Management
+
+Tunnel state changes are the primary trigger for status events. When the tunnel disconnects due to error, the tunnel manager must call `sendClientStatus()` with the correct event string. ENG-528750 demonstrates that some tunnel disconnect paths skip this call entirely, leaving the admin console showing a stale "Enabled" status while the tunnel is actually down.
+
+```mermaid
+sequenceDiagram
+    participant TM as TunnelMgr
+    participant CSH as ClientStatusHandler
+    participant API as addonman API
+    participant DEM as CDemMgr
+
+    Note over TM: Tunnel disconnect detected
+    TM->>TM: Determine disconnect reason
+    alt Standard disconnect path
+        TM->>CSH: sendClientStatus(SEND_EVENT, IS)
+        CSH->>API: postClientStatus(json)
+        CSH->>DEM: callClientStatusCallback(pt)
+    else ENG-528750: Specific disconnect path
+        TM->>TM: Skip sendClientStatus call
+        Note over TM,DEM: No event generated!<br/>Admin console shows stale status
+    end
+```
+
+### Status Reporting x FailClose
+
+FailClose depends on status reporting to communicate the "Fail Closed" state to the admin console. When FailClose activates, the heartbeat override logic changes the `clientStatus` field. However, during the transition from "Enabled" to "Fail Closed", event suppression logic can discard intermediate Internet Security events while still allowing NPA events through. This creates a window where the admin console may show inconsistent state.
+
+### Status Reporting x Install/Upgrade
+
+Every install, upgrade, rollback, and uninstall generates a status event. The upgrade + rollback flow has two confirmed bugs: ENG-601667 (wrong version after rollback) and ENG-671884 (Mac uninstall status not posted). These bugs show that the install status flow is fragile, especially when error handling paths are exercised.
+
+### Cross-Flow Risk Matrix (Chapter-Relevant)
+
+| Interaction | Risk Level | Known Bug | Test Coverage |
+|-------------|-----------|-----------|---------------|
+| Tunnel disconnect -> Status event | 🔴 High | ENG-528750 | ❌ Not covered |
+| Config rotation -> DEM data integrity | 🔴 High | ENG-429954, ENG-637576 | ❌ Not covered |
+| Upgrade rollback -> Version in status | 🔴 High | ENG-601667 | ❌ Not covered |
+| Mac uninstall -> Status POST | 🟡 Medium | ENG-671884 | ❌ Not covered |
+| FailClose -> Heartbeat override | 🟡 Medium | -- | ❌ Not covered |
+| Backend migration -> Device visibility | 🔴 High | ENG-420917, ENG-420918 | ❌ Not covered |
+| Pipeline flag toggle -> Device visibility | 🟡 Medium | -- | ❌ Not covered |
+| Cache overflow -> Critical event loss | 🟡 Medium | -- | ❌ Not covered |
+| Old version upgrade -> DEM user visibility | 🔴 High | ENG-534944 | ❌ Not covered |
+
+## Configuration Parameters
+
+### Client Config JSON Keys
+
+```json
+{
+  "clientConfig": {
+    "clientStatusUpdateIntervalInMin": 5,
+    "clientStatusUpdate": {
+      "heartbeatIntervalInMin": 30
+    },
+    "enableDemClientStatus": true,
+    "disableLegacyClientStatus": false,
+    "enableDemHeartbeat": true,
+    "eventForwarderHost": "events-dem.example.netskope.com",
+    "clientStatusBatchSupport": 1
+  }
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `clientStatusUpdateIntervalInMin` | int | 5 | Minimum wait between legacy status posts (minutes) |
+| `heartbeatIntervalInMin` | int | 30 | Legacy heartbeat interval (minutes) |
+| `enableDemClientStatus` | bool | false | Enable DEM pipeline for client status |
+| `disableLegacyClientStatus` | bool | false | Disable legacy addonman pipeline |
+| `enableDemHeartbeat` | bool | true | Enable DEM heartbeat (5-min timer) |
+| `eventForwarderHost` | string | "" | GEF host (auto-derived from DEM domain if empty) |
+| `clientStatusBatchSupport` | int | 0 | Enable batch posting of cached events |
+
+---
+
+## REST API Endpoints
+
+### Legacy Pipeline (addonman)
+
+| API Version | Endpoint | Auth | Notes |
+|------------|----------|------|-------|
+| V2 | `POST /v2/update/clientstatus?orgkey=...&hashkey=...` | Query params | Oldest, no header auth |
+| V5 | `POST /v5/update/clientstatus` | `Authorization` header (HMAC) | Standard auth |
+| V7 | `POST /v7/update/clientstatus` | `Authorization` header (HMAC + user cert) | Secure config validation |
+
+### DEM Pipeline (GEF)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST https://<gef-host>:443/v1/clientstatus` | Single client status event |
+| `POST https://<gef-host>:443/v1/clientstatus/batch` | Batched client status events |
+
+---
+
+## Platform Differences
+
+### DEM Feature Availability
+
+| Platform | DEM Client Status | DEM Heartbeat | Device Health | Tunnel RTT | App Probes |
+|----------|------------------|---------------|---------------|------------|------------|
+| Windows | Yes | Yes | Yes (`WinDeviceStats`) | Yes | Yes |
+| macOS | Yes | Yes | Yes (`MacDeviceStats`) | Yes | Yes |
+| Linux | Partial | Yes | No | Yes | Partial |
+| Android | Yes | Yes | No | Yes | Yes |
+| iOS | No (NE shim only) | No | No | No | No |
+
+### Status Data Fields by Platform
+
+| Field | Windows | macOS | Linux | Android | iOS |
+|-------|---------|-------|-------|---------|-----|
+| `nsdeviceuid` | From `deviceInfo.get_UniqueIdNew()` | From `configObj->getNewUniqueId()` | Same as macOS | Same as macOS | Same as macOS |
+| `client_version` suffix | `"(64-bit)"` appended on x64 | None | None | None | None |
+| DEM Device Health | Full (CPU, RAM, disk, battery, network) | Full | Not supported | Partial | Not supported |
+| System Power events | `OnSystemPowerDown/Up`, `OnAOACSuspend/Wakeup` | `CPowerMonitorListener` | Not supported | Battery-aware | Background refresh |
+
+---
+
+## Troubleshooting
+
+### Log Keywords
+
+| Component | Log Keywords | Module |
+|-----------|-------------|--------|
+| Status preparation | `"prepared client status message"`, `"Failed to prepare client status"` | `clientStatusHandler` |
+| Legacy POST | `"Client status posted successfully"`, `"Failed to post Client status"` | `clientStatusHandler` |
+| Event caching | `"Caching client status"`, `"Event cache is empty"`, `"Queue is full"` | `eventCache` |
+| Batch posting | `"sending client status in batch"`, `"batch %d sent successfully"` | `eventCache` |
+| DEM heartbeat | `"sending DEM heartbeat event"`, `"DEM enable dem client status flag"` | `config` |
+| DEM posting | `"PostDemClientStatus successfully"`, `"PostDemClientStatus failed"` | `DEM` |
+| FailClose override | `"FailClosed:[sessId %d] discarded client status event"`, `"DEM heartbeat: OVERRIDING client status to fail close"` | `clientStatusHandler` |
+| Install status | `"Received install event"` | `clientStatusHandler` |
+| Legacy disabled | `"Legacy client status pipeline is disabled"` | `clientStatusHandler` |
+
+### Common Problem 1: Device Shows "Offline" in Admin Console
+
+**Symptoms:** Device appears offline or shows stale status in the admin console even though the tunnel is connected.
+
+**Diagnosis:**
+1. Check if heartbeat events are being sent: `grep -i "heartbeat\|client status posted" nsdebuglog.log`
+2. Check if both pipelines are active: `grep -i "Legacy client status pipeline is disabled\|DEM enable dem client status" nsdebuglog.log`
+3. Check for POST failures: `grep -i "Failed to post\|PostDemClientStatus failed" nsdebuglog.log`
+4. Check if events are being cached but never drained: `grep -i "Caching client status" nsdebuglog.log`
+
+**Possible Causes:**
+- Legacy pipeline disabled but DEM pipeline not enabled (pipeline flag mismatch -- see ENG-420917)
+- addonman host unreachable or returning errors
+- User certificate expired (V7 auth fails)
+- Event cache full and all events being evicted
+
+### Common Problem 2: Wrong Status Displayed
+
+**Symptoms:** Admin console shows "Disabled" when tunnel is actually connected, or shows "Enabled" when in FailClose.
+
+**Diagnosis:**
+1. Check the actual status being sent: `grep -i "prepared client status message" nsdebuglog.log` (look at the JSON)
+2. Check for FailClose override: `grep -i "OVERRIDING client status to fail close\|discarded client status" nsdebuglog.log`
+3. Check `status_v2` logic: if IS is disabled but NPA is connected, `status_v2` should be "Enabled"
+
+**Possible Causes:**
+- FailClose active but override condition not met (tunnel in unexpected state)
+- Race condition: event sent during CONNECTING/DISCONNECTING transition (should be rejected)
+- Timestamp collision causing backend to ignore newer event
+
+### Common Problem 3: DEM Data Missing or Corrupted
+
+**Symptoms:** DEM dashboard shows blank scores, wrong install time, or user not appearing.
+
+**Diagnosis:**
+1. Check DEM flags: `grep -i "DEM enable dem client status flag.*enable heart beat flag" nsdebuglog.log`
+2. Check tenant ID: `grep -i "tenant_id\|_tenant_id" nsdebuglog.log` (should not be "0" or empty -- see ENG-637576)
+3. Check client_install_time: `grep -i "appinstalltimestamp\|client_install_time" nsdebuglog.log` (should be stable -- see ENG-429954)
+4. Check GEF posting: `grep -i "PostDemClientStatus" nsdebuglog.log`
+
+**Possible Causes:**
+- Token rotation during config update corrupted tenant ID to "0" (ENG-637576)
+- Upgrade from pre-R120 missing appinstalltimestamp in nsconfig.json (ENG-534944)
+- client_install_time changes on every config rotation (ENG-429954)
+
+---
+
+## Appendix A: Bug Quick Reference
+
+| Bug ID | Summary | Platform | Root Cause | Severity | Regression | Bug Type |
+|--------|---------|----------|------------|----------|------------|----------|
+| [ENG-420917](https://netskope.atlassian.net/browse/ENG-420917) | Devices missing from admin UI after backend migration | Windows, Mac | Backend migration issue -- device status sync failure | S2 | Yes | Test Gap |
+| [ENG-420918](https://netskope.atlassian.net/browse/ENG-420918) | Device not visible on Devices Page | Windows, Mac | Backend migration issue -- device status sync failure | S2 | Yes | Test Gap |
+| [ENG-429954](https://netskope.atlassian.net/browse/ENG-429954) | client_install_time changes unexpectedly in client_status | Windows | Config rotation overwrites appinstalltimestamp; fix in ClientStatusHandler::prepareMessageForDem | S3 | No | Test Gap |
+| [ENG-528750](https://netskope.atlassian.net/browse/ENG-528750) | Client Status Tunnel Down Events Not Generated | Windows | Day-1: certain tunnel disconnect paths skip sendClientStatus call | S2 | No (Day-1) | Test Gap |
+| [ENG-534944](https://netskope.atlassian.net/browse/ENG-534944) | Monitored users not showing agents online | Mac | Regression from ENG-429954 fix -- missed upgrade case when pre-R120 client lacks appinstalltimestamp in nsconfig.json | S2 | Yes | Missing in Regression |
+| [ENG-601667](https://netskope.atlassian.net/browse/ENG-601667) | Service dependency failure + wrong version in status after rollback | Windows | During upgrade rollback, installer reports wrong client version to backend via client status | S3 | No (Day-1) | Corner Case |
+| [ENG-637576](https://netskope.atlassian.net/browse/ENG-637576) | DEM tenant ID reset to 0 -- user scores blank | Windows | Token rotation during config update resets tenant ID; DEM posts with tenant_id="0" causing payload validation failure | S2 | Yes | Corner Case |
+| [ENG-671884](https://netskope.atlassian.net/browse/ENG-671884) | Mac uninstall status not posted to backend | Mac | With clientEncryptBranding=1, InstallerUtil post_uninstall runs after branding cleanup; fix moves post_uninstall before uninstallAuxiliarySvc | S3 | No | Corner Case |
+
+---
+
+## Appendix B: Methodology
+
+### Severity Rating
+
+| Level | Description |
+|-------|-------------|
+| S1 | Service outage: device invisible in admin console, no status updates at all |
+| S2 | Significant data loss: wrong status displayed, DEM data corrupted, events missing |
+| S3 | Minor data issue: wrong timestamp, incorrect version string, cosmetic mismatch |
+| S4 | Cosmetic: log message incorrect, non-functional field mismatch |
+
+### Gap Type Taxonomy
+
+| Type | Description |
+|------|-------------|
+| Regression | Bug introduced by change to existing working code |
+| Day-1 | Bug present since feature was first implemented |
+| Test Gap | Area lacks test coverage for known-risk scenarios |
+| Corner Case | Environment-specific or timing-dependent issue |
+| Missing in Regression | Test case exists but not included in release regression |
+
+### Code References
+
+| File | Description |
+|------|-------------|
+| `lib/nsConfig/clientStatusHandler.h/.cpp` | ClientStatusHandler: prepares and sends status messages |
+| `lib/nsConfig/clientStatusCommon.h` | Enums, constants, field names for status messages |
+| `lib/nsConfig/eventCache.h/.cpp` | CeventCache: bounded event queue with file persistence |
+| `lib/nsConfig/config.h/.cpp` | CConfig: heartbeat interval, feature flags |
+| `lib/nsConfig/userConfig.h` | CUserConfig: per-user status handling |
+| `lib/nsRestApi/addonmanapi.h/.cpp` | CAddonManApi: Legacy REST API for posting to addonman |
+| `lib/nsDEM/nsDemTaskMgr.h/.cpp` | nsDemTaskMgr: DEM task scheduler, GEF posting |
+| `lib/nsDEM/nsDemTask.h/.cpp` | Task classes (client status, device health, app probes) |
+| `stAgent/stAgentSvc/stAgentSvcEx.cpp` | Scheduler: registers DEM heartbeat timer |
+| `stAgent/stAgentSvc/demMgr.h/.cpp` | CDemMgr: DEM manager, receives client status callback |
+
+---
+
+## Related Chapters
+
+- [04_config_download.md](04_config_download.md) -- Config download provides `clientStatusUpdateIntervalInMin`, `heartbeatIntervalInMin`, `enableDemClientStatus`, and other feature flags
+- [07_tunnel_management.md](07_tunnel_management.md) -- Tunnel state changes are the primary trigger for status events; ENG-528750 is a cross-flow bug
+- [11_failclose.md](11_failclose.md) -- FailClose state overrides the status field in both heartbeat and event messages
+- [12_device_classification.md](12_device_classification.md) -- Device Classification status is included in every status message
+- [16_dem.md](16_dem.md) -- DEM metrics share the same GEF delivery pipeline; ENG-637576 and ENG-429954 affect DEM data
+- [01_installation.md](01_installation.md) -- Install/upgrade events trigger status reporting; ENG-601667 and ENG-671884 are cross-flow bugs
+- [15_npa_integration.md](15_npa_integration.md) -- NPA status is reported alongside Internet Security status in every message
