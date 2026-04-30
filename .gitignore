@@ -7,3 +7,4 @@ tc_export/
 *.pyc
 .env
 *.xlsx
+!NSClient System Test Cases.xlsx
