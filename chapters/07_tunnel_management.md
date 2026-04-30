@@ -1,6 +1,6 @@
 # 07. Tunnel Management
 
-**Escalation Bug Count**: 59 | **Regression**: 21 (36%) | **Day-1**: 19 (32%) | **Test Gap**: 11 (19%)
+**Escalation Bug Count**: 71 | **Regression**: 23 (32%) | **Day-1**: 22 (31%) | **Test Gap**: 12 (17%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1437183914#gid=1437183914)**
 
@@ -18,7 +18,7 @@ NSClient's tunnel subsystem is the backbone of all traffic steering. Without a h
 4. **Network Change Handling** -- OS network events trigger tunnel teardown, protocol reset (DTLS state is restored), GSLB cache invalidation, and immediate reconnect with dual-tunnel (SWG + NPA) coordination
 5. **TLS/DTLS Fallback** -- DTLS is preferred for performance (UDP), but falls back to TLS when UDP 443 is blocked; the fallback is sticky until the next network change event resets protocol selection
 
-The highest-risk area is the **CONNECTING state**, where three distinct escalation bugs concentrate: DTLS fallback failure (ENG-503501), proxy detection loss after reboot (ENG-593814), and proxy settings lost after upgrade (ENG-463329). The second highest-risk pattern is **crash during disconnect** (ENG-587497, ENG-593503), where race conditions between tunnel teardown and DEM thread cleanup cause service crashes.
+The highest-risk area is the **CONNECTING state**, where four distinct escalation bugs concentrate: DTLS fallback failure (ENG-503501), proxy detection loss after reboot (ENG-593814), proxy settings lost after upgrade (ENG-463329), and alternate steering check skipped in VDI (ENG-765691). The second highest-risk pattern is **crash during disconnect** (ENG-587497, ENG-593503), where race conditions between tunnel teardown and DEM thread cleanup cause service crashes. A third emerging pattern is **platform-specific tunnel instability**: Android intermittent disconnect on specific hardware (ENG-437202), Android auto-enable on network change despite user disable (ENG-762672), macOS client disabling frequently requiring reboot (ENG-880058), and Linux connectivity loss on 802.1x networks (ENG-774714).
 
 Tunnel bugs have the highest regression rate (36%) and highest Day-1 rate (32%) among all four feature areas, indicating that many tunnel flow paths were insufficiently tested from initial design and that fixes frequently introduce new regressions in related paths.
 
@@ -67,17 +67,22 @@ stateDiagram-v2
         🔴 BUG ENG-587497: Crash on disconnect
         🔴 BUG ENG-429034: Android disconnects after 1m30s
         🔴 BUG ENG-593503: DEM thread crash
+        🔴 BUG ENG-437202: Android intermittent disconnect
+        🔴 BUG ENG-756104: Mac source IP shows GW DHCP IP
     end note
 
     note left of DISCONNECTED_ERROR
         🔴 BUG ENG-592681: Android tunnel repeatedly drops
         🔴 BUG ENG-533981: DNS health check flap
         🔴 BUG ENG-751720: DNS flush stuck
+        🔴 BUG ENG-880058: Mac client disabling frequently
+        🔴 BUG ENG-627806: Linux segfault R117/R122
     end note
 
     note left of DISCONNECTED_BYNETWORKCHANGE
         🔴 BUG ENG-393015: NPA crash on network switch
         🔴 BUG ENG-441957: NPA disconnect
+        🔴 BUG ENG-762672: Android auto-enables on NW change
     end note
 ```
 
@@ -103,10 +108,11 @@ flowchart TD
     
     TLS_DIRECT -->|Success| AUTH
     TLS_DIRECT -->|Failed| PROXY{Proxy available?}
+    TLS_DIRECT -.->|802.1x| BUG_8021X["🔴 BUG ENG-774714<br/>Linux no connectivity<br/>on 802.1x network"]
     
     PROXY -->|Yes| PROXY_CONNECT[HTTP CONNECT via Proxy]
     PROXY -->|No| FAIL[Connection Failed]
-    PROXY -->|Bug| BUG_PROXY["🔴 BUG ENG-593814<br/>Proxy detection fails after reboot<br/>BUG ENG-463329<br/>Post-upgrade not using proxy"]
+    PROXY -->|Bug| BUG_PROXY["🔴 BUG ENG-593814<br/>Proxy detection fails after reboot<br/>BUG ENG-463329<br/>Post-upgrade not using proxy<br/>BUG ENG-765691<br/>Alternate steering check skipped"]
     
     PROXY_CONNECT -->|Success| AUTH
     PROXY_CONNECT -->|Failed| FAIL
@@ -136,9 +142,9 @@ flowchart TD
 | Tunnel Init | Low | Entry point triggered by config ready or reconnect |
 | Config Protocol? | Low | Binary DTLS/TLS selection from config |
 | Attempt DTLS connection | Medium | DTLS handshake can fail silently in restrictive networks; timeout behavior matters |
-| Attempt TLS direct | Low | Standard TLS; well-tested path |
+| Attempt TLS direct | Medium | Standard TLS; well-tested path on most networks. **Bug**: ENG-774714 -- Linux loses all connectivity on 802.1x networks with NSC enabled |
 | dtlsFallback enabled? | **High** | **Bug**: ENG-503501 -- DTLS failure does not fall back to TLS when flag is off |
-| Proxy available? | **High** | **Bug**: ENG-593814 (proxy detection fails after reboot), ENG-463329 (post-upgrade not using proxy) |
+| Proxy available? | **High** | **Bug**: ENG-593814 (proxy detection fails after reboot), ENG-463329 (post-upgrade not using proxy), ENG-765691 (alternate steering check skipped in VDI disconnected-user scenario) |
 | HTTP CONNECT via Proxy | Medium | Enterprise proxy auth (NTLM/Kerberos) negotiation is complex; credential caching issues possible |
 | Connection Failed | Low | Terminal failure state; triggers reconnect strategy |
 | Authentication (SYN_TUNNEL) | Medium | TLV encoding correctness is critical; malformed TLV could cause silent auth failure |
@@ -155,7 +161,8 @@ flowchart TD
 | Flow Step | Known Bugs | Root Cause | Automation |
 |---|---|---|---|
 | dtlsFallback enabled? | ENG-503501 (DTLS no fallback) | Regression from ENG-445563 POP fix: TLS fallback not executed after DTLS failure | Not covered |
-| Proxy available? | ENG-593814 (proxy fails after reboot), ENG-463329 (proxy lost after upgrade) | addonhost not populated after reboot; proxy settings not preserved during upgrade | Not covered |
+| Proxy available? | ENG-593814 (proxy fails after reboot), ENG-463329 (proxy lost after upgrade), ENG-765691 (alternate steering check skipped) | addonhost not populated after reboot; proxy settings not preserved during upgrade; proxy detection depends on impersonating active user, misses disconnected VDI users | Not covered |
+| Attempt TLS direct | ENG-774714 (Linux 802.1x no connectivity) | Linux TUN interface conflicts with 802.1x network authentication; new feature flag added for 802.1x | Not covered |
 | SYN_TUNNEL_REPLY | ENG-398819 (wrong POP), ENG-445563 (off-POP performance) | Negative scenario not handled in GSLB POP selection logic | Not covered |
 
 **Predicted Risk Points (No Known Escalation)**:
@@ -202,6 +209,9 @@ flowchart TD
     BUG_CRASH -->|No| BACKOFF[Backoff + Retry]
     BACKOFF --> DELAY_SUB
 
+    CONNECTED -.-> BUG_INTERMITTENT["🔴 BUG ENG-437202<br/>Android intermittent disconnect"]
+    NO_RECONNECT -.-> BUG_DISABLE["🔴 BUG ENG-880058<br/>Mac client disabling frequently<br/>requires reboot to re-enable"]
+
     style CONNECTED fill:#4CAF50,color:#fff
 ```
 
@@ -211,7 +221,7 @@ flowchart TD
 |---|---|---|
 | Tunnel Disconnected | Low | Entry point; disconnect event received |
 | Disconnect Reason? | Medium | Reason classification is critical -- misclassified reason leads to wrong reconnect strategy |
-| Network Change - Immediate reconnect | Medium | Immediate reconnect with protocol reset -- could fail if network is still transitioning (e.g., WiFi handoff) |
+| Network Change - Immediate reconnect | **High** | Immediate reconnect with protocol reset -- could fail if network is still transitioning (e.g., WiFi handoff). **Bug**: ENG-762672 -- Android client auto-enables on network change even when user disabled it |
 | Config Change - 20-30s delay | Low | Delay allows config to stabilize |
 | Error/DPD - First attempt? | Low | Binary check |
 | User/Admin - No reconnect | Low | Intentional disconnect; no action needed |
@@ -219,8 +229,9 @@ flowchart TD
 | First attempt - 20-30s delay | Low | Standard backoff |
 | Subsequent - 1-10s + backoff | Low | Exponential backoff; max 30s |
 | Attempt connection | Low | Dispatches to Connection Establishment flow |
-| Connected | Low | Success terminal state |
+| Connected | Medium | Success terminal state. **Bug**: ENG-437202 -- Android clients disconnect intermittently (Lenovo platform-specific) |
 | Crash? | **High** | **Bug**: ENG-587497 (crash on disconnect), ENG-593503 (DEM thread overrun) |
+| User/Admin - No reconnect | **High** | **Bug**: ENG-880058 -- macOS client disables frequently and only re-enables after reboot; user-disabled state should persist but NE/proxy instability forces repeated disable |
 | Backoff + Retry | Medium | Persistent retry without limit could mask underlying issue; should alert after N failures |
 
 ---
@@ -243,6 +254,7 @@ sequenceDiagram
     OS->>TUN: Network Change Event
     
     Note over TUN: 🔴 BUG ENG-393015: NPA crash<br/>on network switch
+    Note over TUN: 🔴 BUG ENG-762672: Android auto-enables<br/>on NW change despite user disable
 
     TUN->>TUN: Disconnect existing tunnel
     TUN->>TUN: Status = DISCONNECTED_BYNETWORKCHANGE
@@ -260,6 +272,8 @@ sequenceDiagram
     
     TUN->>GW: Immediate reconnect (delay = 0)
     GW-->>TUN: Connected
+
+    Note over TUN,GW: 🔴 BUG ENG-756104: Mac source IP<br/>shows Gateway DHCP IP in SkopeIT logs
     
     TUN->>FC: Notify tunnel up
     FC->>FC: FailClose deactivated
@@ -320,7 +334,7 @@ flowchart TD
 
 ## Windows
 
-**Bug Count**: 13 direct + cross-platform shared | **Key Gaps**: VDI multi-user, DNS flush deadlock, proxy persistence, AOAC
+**Bug Count**: 14 direct + cross-platform shared | **Key Gaps**: VDI multi-user, DNS flush deadlock, proxy persistence, AOAC, VDI steering check
 
 Windows uses the WFP (Windows Filtering Platform) driver for packet interception and the `stAgentSvc` service for tunnel management. The tunnel manager thread is responsible for connection establishment, DPD monitoring, and reconnect logic. Windows accounts for the majority of tunnel escalation bugs, with three dominant failure patterns:
 
@@ -345,12 +359,13 @@ Windows uses the WFP (Windows Filtering Platform) driver for packet interception
 | **ENG-752117** | VDI master image vs tenant config FailClose mismatch | VDI master image has FC enabled, tenant config has FC disabled; config sync race condition | Corner case, not recommended deployment method |
 | **ENG-918131** | VDI multi-user tunnel establishment delayed 20s | ~20s delay when multiple users login simultaneously | Need VDI environment stability test automation |
 | **ENG-406879** | NSClient retains proxy details after proxy removal | Proxy settings not synced to tunnel connection after clearing | Monitor logs during proxy changes to verify proxy setting synchronization |
+| **ENG-765691** | Alternate Steering Check not performed occasionally (Morgan Stanley) | Proxy detection depends on impersonating active user; in VDI, disconnected-state users are missed despite active tunnels | Fix proxy detection to consider disconnected VDI users |
 
 ---
 
 ## macOS
 
-**Bug Count**: 2 direct + cross-platform shared | **Key Gaps**: AOAC/Dark Wake, System Extension recovery, DHCP interop
+**Bug Count**: 4 direct + cross-platform shared | **Key Gaps**: AOAC/Dark Wake, System Extension recovery, DHCP interop, NE/proxy stability
 
 macOS uses a System Extension with a transparent proxy for network filtering. The tunnel management logic is shared with Windows at the application layer, but the network event handling differs due to macOS-specific APIs (`SCNetworkReachability`, `NWPathMonitor`). The most significant macOS-specific issue is AOAC (Modern Standby / Dark Wake) tunnel recovery.
 
@@ -360,6 +375,8 @@ macOS uses a System Extension with a transparent proxy for network filtering. Th
 |--------|----------------|-----------|-----|
 | **ENG-548975** | Captive portal grace period not working as expected | Original code resets captive portal status after tunnel worker thread starts, but GSLB checking may have 20s delay | Fix reset timing: after GSLB checking, before tunnel worker thread |
 | **ENG-746099** | AOAC tunnel frequent disconnect (MakeMyTrip) | Tunnel not maintained during macOS system wakeup | Add `enableMacOsAOACSupport` flag to maintain tunnel during onSystemWakeup callback |
+| **ENG-756104** | SkopeIT logs show source IP as Gateway DHCP IP | Client code updated machine IP only in info log print statement; warn/error/critical log levels skip the IP update | Split IP update and log print into separate statements |
+| **ENG-880058** | MAC Client disabling frequently, enables only after reboot (IndMoney) | macOS NE/proxy instability causes client to repeatedly enter disabled state | Under investigation; reboot required to restore |
 
 macOS also shares ENG-548975 with Windows (captive portal grace period timing) and is affected by NPA-related tunnel bugs ENG-441957 and ENG-393015 through the shared NPA core library.
 
@@ -367,15 +384,22 @@ macOS also shares ENG-548975 with Windows (captive portal grace period timing) a
 
 ## Linux
 
-**Bug Count**: 0 direct tunnel bugs | **Key Gaps**: Large domain crash, VIF device handling
+**Bug Count**: 1 direct + cross-platform shared | **Key Gaps**: Large domain crash, VIF device handling, 802.1x network interop
 
-Linux uses a TUN virtual interface (VIF) for packet interception. The tunnel management logic is shared with desktop platforms, but Linux-specific kernel networking differences (netfilter vs WFP, systemd service management) create unique recovery paths. No Linux-specific tunnel escalation bugs have been filed to date, but Linux shares all cross-platform tunnel bugs (ENG-591725 NONE-to-Web transition, ENG-503501 DTLS fallback) and is affected by the large domain crash (ENG-948106) that can occur during tunnel establishment when loading a 35K+ entry steering config.
+Linux uses a TUN virtual interface (VIF) for packet interception. The tunnel management logic is shared with desktop platforms, but Linux-specific kernel networking differences (netfilter vs WFP, systemd service management) create unique recovery paths. Linux shares all cross-platform tunnel bugs (ENG-591725 NONE-to-Web transition, ENG-503501 DTLS fallback) and is affected by the large domain crash (ENG-948106) that can occur during tunnel establishment when loading a 35K+ entry steering config.
+
+### Linux-Specific Bugs
+
+| Bug ID | Problem Summary | Root Cause | Fix |
+|--------|----------------|-----------|-----|
+| **ENG-774714** | No connectivity on 802.1x network with NSC enabled | Linux TUN interface conflicts with 802.1x (WPA Enterprise) network authentication; Day-1 issue | New feature flag added for 802.1x network support; automation pending setup (tracked by ENG-795961) |
+| **ENG-627806** | Intermittent segmentation fault in Linux NS Client R117/R122 | Crash in tunnel handling code on Linux; intermittent segfault during active tunnel operation | Crash fix in subsequent release |
 
 ---
 
 ## Android
 
-**Bug Count**: 5 direct | **Key Gaps**: Network state machine, NPA recovery, cellular transitions
+**Bug Count**: 7 direct | **Key Gaps**: Network state machine, NPA recovery, cellular transitions, network change auto-enable
 
 Android tunnel management faces unique challenges due to the mobile network environment: frequent WiFi-to-cellular transitions, unreliable network events from vendor-specific OS customizations (Samsung, Xiaomi), and the need to coordinate both SWG and NPA tunnels during network changes. Android has the highest Day-1 bug ratio among all platforms for tunnel management, indicating that mobile network state complexity was underestimated during initial design.
 
@@ -390,6 +414,8 @@ The DPD threshold difference (Android requires >3 consecutive DPD failures vs De
 | **ENG-592681** | Android tunnel repeatedly drops (NPA recovery bug) | NPA + SWG recovery mechanism bug: both tunnels enter disconnected state under specific conditions | Re-implement recovery mechanism to cover all cases |
 | **ENG-917549** | Android stuck in Connecting state (Sabistech) | WiFi to Mobile Data switch receives no network event; tunnel manager stops; UI does not update | Fix tunnel state update to UI logic |
 | **ENG-652754** | Android stuck in connecting state (Banco de Sabadell) | Abnormal tunnel connect/disconnect cycle during unreliable network | Hard to reproduce; need Android tunnel disconnect/connect negative testing |
+| **ENG-437202** | Android clients getting disconnected intermittently | Platform-specific (Lenovo) intermittent tunnel disconnect on data path | Improve platform coverage testing for Android; test gap in device diversity |
+| **ENG-762672** | Android client auto-enables during network change despite user disable (BHEL) | Custom OS devices allow tunnel disconnect from notification bar; network change triggers auto re-enable ignoring user disable state | Need additional custom OS devices to cover notification-bar disconnect scenario |
 
 ---
 
@@ -960,8 +986,14 @@ Tunnel Management interacts with Steering, FailClose, NPA, and Installation in w
 | **ENG-782593** | Device Classification Rule cannot save with TM symbol | Backend AV name regex uses whitelist mechanism; does not allow special characters | Expand backend regex whitelist | Backend |
 | **ENG-487939** | Upgrade fails when Self-Protection enabled | Regression from Log Improvement change; Self-Protection blocks service stop | Add Self-Protection scenarios to auto-upgrade flow | Windows |
 | **ENG-533221** | Client disabled after scheduled upgrade, no error | Day-1: client disabled after scheduled upgrade with no error message | Add scheduled upgrade test cases | Windows |
+| **ENG-437202** | Android clients getting disconnected intermittently | Platform-specific (Lenovo) intermittent tunnel disconnect on data path | Improve platform coverage testing | Android |
+| **ENG-756104** | SkopeIT logs show source IP as Gateway DHCP IP | Client code updated machine IP only in info log print; warn/error/critical levels skip IP update | Split IP update and log print into separate statements | macOS |
+| **ENG-762672** | Android client auto-enables during NW change despite user disable (BHEL) | Custom OS devices allow tunnel disconnect from notification bar; NW change triggers auto re-enable | Need additional custom OS devices for testing | Android |
+| **ENG-765691** | Alternate Steering Check not performed occasionally (Morgan Stanley) | Proxy detection depends on impersonating active user; VDI disconnected-state users missed | Fix proxy detection to consider disconnected users | Windows |
+| **ENG-774714** | No connectivity on 802.1x network with NSC enabled (Linux) | Linux TUN interface conflicts with 802.1x network authentication; Day-1 | New feature flag for 802.1x; automation pending setup (ENG-795961) | Linux |
+| **ENG-880058** | MAC Client disabling frequently, enables only after reboot (IndMoney) | macOS NE/proxy instability causes repeated disable state | Under investigation; reboot required to restore | macOS |
 
-> **Note**: The 59-bug count reflects all bugs classified under the Tunneling category in the escalation database. Some bugs span multiple categories (37 cross-category bugs total). Bugs that primarily belong to Steering or FailClose but have tunnel-related impact are included here for completeness and cross-referenced in their primary chapters.
+> **Note**: The 65-bug count reflects all bugs classified under the Tunneling category in the escalation database. Some bugs span multiple categories (37 cross-category bugs total). Bugs that primarily belong to Steering or FailClose but have tunnel-related impact are included here for completeness and cross-referenced in their primary chapters.
 
 ---
 

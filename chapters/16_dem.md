@@ -1,10 +1,10 @@
 # 16. DEM (Digital Experience Monitoring)
 
-**Escalation Bug Count**: 5 | **Regression**: 3 (60%) | **Day-1**: 0 (0%) | **Test Gap**: 1 (20%)
+**Escalation Bug Count**: 18 | **Regression**: 4 | **Day-1**: 7 | **Test Gap**: 4 | **Corner Case**: 5
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1598985685#gid=1598985685)**
 
-> This chapter covers the DEM module that monitors network quality and application performance from the endpoint perspective. DEM collects tunnel RTT, traceroute hops, device health metrics (CPU, memory, disk, WiFi), and application probe statistics, then posts them to the Netskope cloud via the Gateway Event Forwarder (GEF) for end-user experience visibility. Six escalation bugs have been mapped to DEM failure points, with 50% being regressions — the highest regression rate among all feature areas. Thread safety during tunnel lifecycle transitions and tenant identity integrity during config rotation represent the most critical risk areas.
+> This chapter covers the DEM module that monitors network quality and application performance from the endpoint perspective. DEM collects tunnel RTT, traceroute hops, device health metrics (CPU, memory, disk, WiFi), and application probe statistics, then posts them to the Netskope cloud via the Gateway Event Forwarder (GEF) for end-user experience visibility. Eighteen escalation bugs have been mapped to DEM failure points spanning device health metric collection failures (disk, WiFi, network throughput), client status reporting gaps, network event synchronization crashes, app probe timing errors, and config flag mismatches. Thread safety during tunnel lifecycle transitions and tenant identity integrity during config rotation represent the most critical risk areas, while device health metric accuracy across platforms represents the broadest gap surface.
 
 ---
 
@@ -20,8 +20,15 @@ DEM configuration comes from two sources. The Management Plane config (`nsconfig
 - **Thread safety on tunnel disconnect** (ENG-593503): DEM thread crash cascades to tunnel failure
 - **Tenant identity during config rotation** (ENG-637576): Tenant ID reset to 0 corrupts all DEM event payloads
 - **Client status accuracy after upgrade** (ENG-534944, ENG-429954): Install time and agent visibility regressions via DEM client status path
-- **Third-party interop** (ENG-495212): DEM config exceptions when CrowdStrike or similar agents are present
-- **Deprecated feature flag cleanup**: Stale `duplicateRccDataToGEF` flag causes incorrect dashboard display (predicted risk)
+- **Client status posting failures** (ENG-429064, ENG-748332): Client status not sent after DEM enable or disabled via Ursa config
+- **Device health metric accuracy** (ENG-421796, ENG-669888, ENG-802476): Disk metrics fail on macOS, WiFi signal always 0 on hidden networks, network throughput missing on non-English OS
+- **Network event synchronization** (ENG-483200, ENG-424865): Race condition in network watcher thread causes frequent events and crashes
+- **DEM crash on macOS** (ENG-549966): Client crash during network interface disconnect events
+- **Event delivery gaps** (ENG-789126): Network and device events missing when sampling cancelled prematurely
+- **App probe timing errors** (ENG-848014): Negative values in app probe stats from curl API misuse
+- **User count accuracy** (ENG-683548): Wrong feature flag used as DEM service status inflates user count
+- **Deprecated feature flag cleanup** (ENG-679420): Stale `duplicateRccDataToGEF` flag causes Netskope icon in Network Path Latency dashboard
+- **Config flag mismatch** (ENG-431642): Route control enabled in client without backend flags
 
 ---
 
@@ -89,10 +96,14 @@ graph TB
     BUG_593503["🔴 BUG ENG-593503<br/>DEM thread stack overrun<br/>crash on tunnel disconnect"]
     BUG_637576["🔴 BUG ENG-637576<br/>Tenant ID reset to 0<br/>during config rotation"]
     BUG_495212["🔴 BUG ENG-495212<br/>DEM config exceptions<br/>with 3rd-party interop"]
+    BUG_549966["🔴 BUG ENG-549966<br/>macOS client crash during<br/>network interface events"]
+    BUG_483200["🔴 BUG ENG-483200<br/>Network watcher race condition<br/>frequent events + crash"]
 
     DEMMGR --- BUG_593503
+    DEMMGR --- BUG_549966
     TASKMGR --- BUG_637576
     CFG --- BUG_495212
+    DS --- BUG_483200
 
     RISK_CERT["🟡 Warning: Stale cert after<br/>re-enrollment silently fails<br/>device health + app probe posts"]
     RISK_PATH["🟡 Warning: Empty dataPath<br/>before enrollment causes<br/>silent cache loss"]
@@ -110,8 +121,10 @@ graph TB
 | Node | Risk Level | Bug / Risk | Impact |
 |---|---|---|---|
 | CDemMgr | High | ENG-593503: Thread stack overrun on disconnect | Client crash, tunnel failure |
+| CDemMgr | High | ENG-549966: macOS client crash during network interface events | Client crash on macOS |
 | nsDemTaskMgr | High | ENG-637576: Tenant ID reset to 0 | All DEM events rejected by backend |
 | nsDemConfigTask | Medium | ENG-495212: Config exceptions with 3rd-party | DEM config fetch fails silently |
+| DeviceStats | High | ENG-483200: Network watcher race condition | Frequent events in log, possible crash |
 | nsDemPostmanTask | Medium | Stale cert after re-enrollment | Device health + app probe events silently dropped |
 | nsDemPostmanTask | Medium | Empty dataPath before enrollment | Cached events lost without error logging |
 | GEF / Polaris | Low | Normal delivery endpoints | N/A |
@@ -160,6 +173,8 @@ sequenceDiagram
     TM->>SCHED: registerTask(traceRoute)
     TM->>SCHED: registerTask(postman)
     DEM->>DEM: startDeviceHealth + startAppProbing
+    Note over DEM: 🔴 ENG-483200: Network watcher sync<br/>issue causes frequent events when<br/>device health enabled
+    Note over DEM: 🔴 ENG-789126: If sampling cancelled<br/>here, network + device events lost
 
     loop Scheduled Tasks
         SCHED->>TM: runScheduledTask(tunnelRtt)
@@ -249,6 +264,18 @@ flowchart TD
     TASK --> POST["POST to GEF<br/>v1/devicehealth"]
     POST -->|Fail| CACHE["Save to cache<br/>dev_*.json.enc"]
 
+    BUG_421796["🔴 BUG ENG-421796<br/>macOS failed Disk<br/>consumption metrics"]
+    BUG_669888["🔴 BUG ENG-669888<br/>WiFi signal always 0<br/>on hidden networks (Win)"]
+    BUG_802476["🔴 BUG ENG-802476<br/>Network throughput missing<br/>on non-English Windows"]
+    BUG_424865["🔴 BUG ENG-424865<br/>Network watcher race condition<br/>NSCOM connection broken (Mac)"]
+    BUG_789126["🔴 BUG ENG-789126<br/>Network + device events<br/>missing on sampling cancel"]
+
+    DISKM --- BUG_421796
+    WIFIM --- BUG_669888
+    NETM --- BUG_802476
+    NETM --- BUG_424865
+    SAMPLE --- BUG_789126
+
     RISK_CERT["🟡 Warning: Stale cert after<br/>re-enrollment. checkClientCertCN<br/>not called for device health posts"]
 
     POST --- RISK_CERT
@@ -290,6 +317,10 @@ flowchart TD
     MORE -->|Yes| LOOP
     MORE -->|No| SLEEP["Sleep until next probe cycle"]
     SLEEP --> LOOP
+
+    BUG_848014["🔴 BUG ENG-848014<br/>Negative app probe timing values<br/>from curl API return code misuse"]
+
+    TIMING --- BUG_848014
 
     RISK_LIMIT["🟡 Warning: App probe limit<br/>(default 10) silently drops<br/>probes beyond limit"]
 
@@ -367,8 +398,12 @@ flowchart TD
     CALLBACK --> UPDATE["updateDemTasks()"]
 
     BUG_637576["🔴 BUG ENG-637576<br/>Config token rotation<br/>resets tenant_id to 0"]
+    BUG_431642["🔴 BUG ENG-431642<br/>Route control enabled in client<br/>without backend flags"]
+    BUG_683548["🔴 BUG ENG-683548<br/>Wrong feature flag used as<br/>DEM service status"]
 
     START --- BUG_637576
+    SAVE --- BUG_431642
+    UPDATE --- BUG_683548
 
     style STOP fill:#999,color:#fff
     style UPDATE fill:#4CAF50,color:#fff
@@ -382,7 +417,9 @@ flowchart TD
 | refreshConfig() | High | ENG-637576: tenant_id reset to 0 | All DEM events rejected by backend |
 | subscription == "none" | Low | Expected teardown behavior | DEM correctly disabled |
 | GET /demconfig | Medium | ENG-495212: 3rd-party interop exception | DEM config not fetched, stale config used |
+| saveDemConfig | High | ENG-431642: Route control enabled without backend flags | Client acts on config flags backend did not set |
 | Retry logic | Low | Built-in 2x retry | Graceful degradation to cached config |
+| updateDemTasks | High | ENG-683548: Wrong feature flag as DEM service status | More users shown than actually monitored |
 | updateDemTasks | Medium | App probe config race | Config change flag overwritten between hash check and update |
 
 ---
@@ -406,9 +443,13 @@ flowchart TD
 
     BUG_429954["🔴 BUG ENG-429954<br/>client_install_time changes<br/>too frequently in client_status"]
     BUG_534944["🔴 BUG ENG-534944<br/>Monitored users not showing<br/>after upgrade from pre-R120"]
+    BUG_429064["🔴 BUG ENG-429064<br/>Client not posting client status<br/>after enabling DEM"]
+    BUG_748332["🔴 BUG ENG-748332<br/>Client status missing when<br/>enableDemClientStatus disabled via Ursa"]
 
     CTX --- BUG_429954
     CTX --- BUG_534944
+    SEND --- BUG_429064
+    SEND --- BUG_748332
 
     style UCS fill:#4CAF50,color:#fff
     style GEF_CHK fill:#2196F3,color:#fff
@@ -421,6 +462,8 @@ flowchart TD
 |---|---|---|---|
 | Build nsDemClientContext | High | ENG-429954: install_time changes frequently | Incorrect device metrics in DEM dashboard |
 | Build nsDemClientContext | High | ENG-534944: Missing appinstalltimestamp after upgrade | Users invisible in DEM dashboard |
+| sendToDemClientStatusTask | High | ENG-429064: Client not posting status after DEM enable | Client status never reaches GEF; device invisible |
+| sendToDemClientStatusTask | High | ENG-748332: Client status missing when flag disabled via Ursa | Backend expects DEM flow but flag turned off |
 | handleDEMJSONStr | Low | Boolean conversion | Cosmetic: quoted "true"/"false" vs native boolean |
 | POST to GEF | Medium | Stale cert after re-enrollment | Events silently rejected |
 
@@ -430,7 +473,7 @@ flowchart TD
 
 DEM traffic to the Polaris event receiver must bypass the Netskope tunnel to avoid circular routing. `CDemMgr::bypassPacketLocally()` identifies DEM traffic by checking SYN-only TCP packets on port 443 where the destination matches a configured receiver address (IP for Polaris, FQDN for DP).
 
-A known issue with the deprecated feature flag (`duplicateRccDataToGEF`) caused Polaris route control data to be sent to PDEM, where the target IP did not match the tunnel destination IP, leading to incorrect Netskope icon display in the Network Path Latency dashboard.
+ENG-679420 confirmed that the deprecated feature flag (`duplicateRccDataToGEF`) caused Polaris route control data to be sent to PDEM, where the target IP did not match the tunnel destination IP, leading to incorrect Netskope icon display in the Network Path Latency dashboard. The fix removed all code related to this feature flag.
 
 ```mermaid
 flowchart TD
@@ -442,9 +485,9 @@ flowchart TD
     DP_CHK -->|Yes| BYPASS
     DP_CHK -->|No| STEER
 
-    RISK_FLAG["🟡 Warning: duplicateRccDataToGEF<br/>deprecated flag causes wrong<br/>icon in dashboard"]
+    BUG_679420["🔴 BUG ENG-679420<br/>Netskope icon shown in<br/>Network Path Latency dashboard"]
 
-    BYPASS --- RISK_FLAG
+    BYPASS --- BUG_679420
 
     style BYPASS fill:#4CAF50,color:#fff
     style STEER fill:#2196F3,color:#fff
@@ -454,9 +497,26 @@ flowchart TD
 
 ## Windows
 
-**Bug Count**: 4 | **Key Gaps**: DEM thread safety during tunnel disconnect, tenant ID integrity, 3rd-party interop, DEM client status accuracy
+**Bug Count**: 12 | **Key Gaps**: DEM thread safety during tunnel disconnect, tenant ID integrity, 3rd-party interop, DEM client status accuracy, WiFi signal collection, network throughput localization, config flag mismatch
 
-Windows is the primary DEM platform with full feature support: tunnel RTT, traceroute (ICMP API), device health (WMI, Performance Counters, WLAN API), app probes, and DEM config fetch. Four of the six DEM escalation bugs were reported on Windows.
+Windows is the primary DEM platform with full feature support: tunnel RTT, traceroute (ICMP API), device health (WMI, Performance Counters, WLAN API), app probes, and DEM config fetch. Twelve of the eighteen DEM escalation bugs affect Windows, spanning device health metric collection (WiFi signal, network throughput), client status posting, config flag mismatches, and app probe timing errors.
+
+### Windows DEM Bug Summary
+
+| Bug ID | Summary | Root Cause | Severity |
+|--------|---------|------------|----------|
+| **ENG-429064** | Client not posting client status after enabling DEM | Day-1: Client status path not triggered on DEM enable | S2 |
+| **ENG-431642** | Route control enabled without backend flags | Day-1: DEM log tag caused confusion; config flag mismatch | S3 |
+| **ENG-483200** | Frequent network events + crash when device health enabled | Regression: Network watcher synchronization race condition | S2 |
+| **ENG-495212** | DEM config exceptions with CrowdStrike | Corner case: boost::filesystem::canonical exception | S3 |
+| **ENG-593503** | DEM thread stack overrun crash on tunnel disconnect | Thread stack corruption during active DEM task teardown | S1 |
+| **ENG-637576** | Tenant ID reset to 0 during config rotation | Config token rotation resets tenant_id | S2 |
+| **ENG-669888** | WiFi signal always shown as 0 in DEM UI | Hidden WiFi not enumerated by WlanGetNetworkBssList API | S3 |
+| **ENG-679420** | Netskope icon in Network Path Latency dashboard | Deprecated duplicateRccDataToGEF flag still active | S3 |
+| **ENG-683548** | More users than monitored shown | Wrong feature flag used as DEM service status | S3 |
+| **ENG-748332** | Client status missing for device | enableDemClientStatus disabled via Ursa config | S3 |
+| **ENG-789126** | Network and device events missing for some users | Events lost when sampling cancelled prematurely | S3 |
+| **ENG-802476** | Network throughput metrics missing | Performance counter names English-only; fails on non-English OS | S2 |
 
 ### Windows DEM Thread Crash Flow (ENG-593503)
 
@@ -483,6 +543,10 @@ flowchart TD
 
     RESET --> STOP_TASKS
 
+    BUG_483200W["🔴 BUG ENG-483200<br/>Network watcher sync issue<br/>frequent events + crash"]
+
+    ACTIVE --- BUG_483200W
+
     RISK_RAPID["🟡 Warning: Rapid tunnel<br/>connect/disconnect cycles<br/>can trigger unbalanced callbacks"]
 
     DISCONNECT --- RISK_RAPID
@@ -492,11 +556,26 @@ flowchart TD
 
 ## macOS
 
-**Bug Count**: 1 (shared with Windows) | **Key Gaps**: DEM client status after upgrade, traceroute blocking, dark wake handling
+**Bug Count**: 8 | **Key Gaps**: DEM client status after upgrade, disk metrics collection, network watcher race condition, client crash during network interface events, traceroute blocking, dark wake handling
 
 macOS has near-parity with Windows for DEM features. Key platform differences: traceroute uses native `traceroute` command via `nsTraceRouteMacCmd` (can block up to 2 minutes per target), WiFi metrics use CoreWLAN framework, and network interface monitoring uses `NWPathMonitor`. macOS handles user login/logoff events for DEM and has specific dark wake (Modern Standby) behavior.
 
-ENG-534944 was reported on macOS: after upgrade from a pre-R120 client, monitored users did not appear in the DEM dashboard because the `appinstalltimestamp` field was missing from nsconfig.json.
+Eight DEM bugs affect macOS, with three being macOS-only (ENG-421796 disk metrics, ENG-424865 NSCOM connection race, ENG-549966 crash during network interface disconnect). ENG-534944 was reported on macOS: after upgrade from a pre-R120 client, monitored users did not appear in the DEM dashboard because the `appinstalltimestamp` field was missing from nsconfig.json.
+
+### macOS DEM Bug Summary
+
+| Bug ID | Summary | Root Cause | Severity |
+|--------|---------|------------|----------|
+| **ENG-421796** | Failed disk consumption metrics on Mac | Day-1: Disk metric collection returns failure on macOS | S3 |
+| **ENG-424865** | NSCOM connection broken multiple times | Regression: Network watcher thread race condition on new interfaces | S2 |
+| **ENG-483200** | Frequent network events + crash when device health enabled | Regression: Network watcher synchronization race condition | S2 |
+| **ENG-534944** | Monitored users not showing after upgrade from pre-R120 | Regression from ENG-429954 fix: missing appinstalltimestamp | S2 |
+| **ENG-549966** | Client crash on macOS (DEM related) | Corner case: Crash during network interface disconnect events | S1 |
+| **ENG-679420** | Netskope icon in Network Path Latency dashboard | Deprecated duplicateRccDataToGEF flag still active | S3 |
+| **ENG-683548** | More users than monitored shown | Wrong feature flag used as DEM service status | S3 |
+| **ENG-748332** | Client status missing for device | enableDemClientStatus disabled via Ursa config | S3 |
+| **ENG-789126** | Network and device events missing for some users | Events lost when sampling cancelled prematurely | S3 |
+| **ENG-848014** | Site to POP connection time high | Negative app probe timing values from curl API misuse | S3 |
 
 ```mermaid
 flowchart TD
@@ -508,6 +587,30 @@ flowchart TD
     BACKEND --> BUG_534944["🔴 BUG ENG-534944<br/>Monitored users not<br/>showing in dashboard"]
 
     style OK fill:#4CAF50,color:#fff
+```
+
+### macOS Device Health and Crash Bugs
+
+ENG-421796 affects disk consumption metric collection on macOS, where the disk usage collector returns failed metrics. ENG-424865 is a race condition where the network watcher thread pushes new interfaces into a vector while the subsample thread iterates over it, causing NSCOM connection breaks. ENG-549966 is a client crash triggered by network interface disconnect events during DEM device health collection.
+
+```mermaid
+flowchart TD
+    DH_START["Device health sampling<br/>started on macOS"] --> COLLECTORS["Platform collectors:<br/>CPU, Memory, Disk, WiFi, Network"]
+
+    COLLECTORS --> DISK_COL["DiskUsage collector"]
+    COLLECTORS --> NET_COL["Network watcher thread"]
+    COLLECTORS --> IFACE_COL["Interface monitor<br/>(NWPathMonitor)"]
+
+    DISK_COL --> BUG_421796["🔴 BUG ENG-421796<br/>macOS disk consumption<br/>metrics return failure"]
+
+    NET_COL --> PUSH["Push new interfaces<br/>to vector"]
+    PUSH --> SUBSAMPLE["Subsample thread<br/>iterates vector"]
+    SUBSAMPLE --> BUG_424865["🔴 BUG ENG-424865<br/>Race condition: new interfaces<br/>pushed during iteration"]
+
+    IFACE_COL --> DISCONNECT["Network interface<br/>disconnect event"]
+    DISCONNECT --> BUG_549966["🔴 BUG ENG-549966<br/>macOS client crash<br/>during interface disconnect"]
+
+    style DH_START fill:#4CAF50,color:#fff
 ```
 
 ## Linux
@@ -540,7 +643,7 @@ ChromeOS has the same DEM support level as Android (via the shared Android codeb
 
 ## Backend
 
-DEM backend issues are primarily about event acceptance. ENG-637576 demonstrated that when the client sends events with tenant_id=0 (due to config rotation bug), the backend rejects them with "payload validation issue: tenant ID does not match." A known issue with the deprecated `duplicateRccDataToGEF` feature flag caused incorrect data routing to PDEM.
+DEM backend issues span event acceptance, dashboard accuracy, and metric visibility. ENG-637576 demonstrated that when the client sends events with tenant_id=0 (due to config rotation bug), the backend rejects them with "payload validation issue: tenant ID does not match." ENG-679420 confirmed that the deprecated `duplicateRccDataToGEF` feature flag caused incorrect data routing to PDEM, showing the Netskope icon in the Network Path Latency dashboard. ENG-683548 showed that the wrong feature flag being used as DEM service status caused more users to appear than were actually monitored. ENG-748332 revealed that disabling the `enableDemClientStatus` flag via Ursa config caused client status to go missing even though the backend had already transitioned to consuming DEM client status flow. ENG-848014 confirmed that negative app probe timing values (from curl API return code misuse) inflated Site-to-POP connection times in the Performance dashboard.
 
 ## Automation Coverage Summary
 
@@ -550,12 +653,20 @@ DEM backend issues are primarily about event acceptance. ENG-637576 demonstrated
 | Tunnel RTT collection | ❌ Not covered | Requires tunnel + SPDY PING validation |
 | Traceroute execution | ❌ Not covered | Platform-specific (Win ICMP API, Mac native cmd) |
 | Device health collection | ❌ Not covered | Requires subscription tier + platform metrics |
-| App probe timing | ❌ Not covered | Requires configured probe targets + GEF endpoint |
+| Device health: disk metrics (macOS) | ❌ Not covered | ENG-421796: Verify disk consumption metrics on macOS |
+| Device health: WiFi signal (Win) | ❌ Not covered | ENG-669888: Verify WiFi signal on hidden networks |
+| Device health: network throughput (Win) | ❌ Not covered | ENG-802476: Verify metrics on non-English OS locales |
+| Device health: network events | ❌ Not covered | ENG-483200, ENG-424865: Network watcher race condition |
+| App probe timing | ❌ Not covered | ENG-848014: Verify no negative timing values in app probe stats |
 | DEM config fetch | ❌ Not covered | Requires DEM Config Service interaction |
+| DEM config flag validation | ❌ Not covered | ENG-431642: Verify route control flags match backend |
 | Postman cache + retry | ❌ Not covered | Requires GEF outage simulation |
-| Client status to GEF | ❌ Not covered | Closest existing coverage: `client_status` feature tests (no DEM validation) |
+| Client status to GEF | ❌ Not covered | ENG-429064, ENG-748332: Verify status posted after DEM enable and flag changes |
+| DEM user count accuracy | ❌ Not covered | ENG-683548: Verify monitored user count matches reality |
+| Sampling cancel data preservation | ❌ Not covered | ENG-789126: Verify events dumped to metrics.json on cancel |
 | Tenant ID integrity (ENG-637576) | ❌ Not covered | Requires config token rotation during DEM activity |
 | Thread safety (ENG-593503) | ❌ Not covered | Requires rapid tunnel cycle stress testing |
+| macOS crash on interface disconnect | ❌ Not covered | ENG-549966: Verify stability during network interface changes |
 
 **Overall DEM automation coverage: 0%.** DEM has no dedicated test coverage in the golden regression suite. The `client_status` feature tests exist but do not validate DEM-specific client status fields or GEF posting.
 
@@ -635,10 +746,20 @@ DEM client status reporting depends on the `ClientStatusHandler::prepareMessageF
 | Interaction | Bug(s) | Failure Mode | Severity | Priority |
 |---|---|---|---|---|
 | DEM + Tunnel disconnect | ENG-593503 | Thread crash cascading to tunnel | S1 | P1 |
+| DEM + Network interface events (macOS) | ENG-549966 | Client crash during interface disconnect | S1 | P1 |
 | DEM + Config rotation | ENG-637576 | Tenant ID = 0, events rejected | S2 | P1 |
 | DEM + Client status + Upgrade | ENG-534944, ENG-429954 | Users invisible in dashboard | S2 | P2 |
+| DEM + Client status enable/disable | ENG-429064, ENG-748332 | Client status not posted or missing | S2 | P2 |
+| DEM + Network watcher thread | ENG-483200, ENG-424865 | Race condition: frequent events + crash | S2 | P2 |
+| DEM + Device health metrics (macOS) | ENG-421796 | Disk consumption metrics fail | S3 | P2 |
+| DEM + WiFi hidden networks (Win) | ENG-669888 | WiFi signal always 0 | S3 | P2 |
+| DEM + Non-English OS (Win) | ENG-802476 | Network throughput metrics missing | S2 | P1 |
+| DEM + App probe timing | ENG-848014 | Negative values inflate connection time | S3 | P2 |
+| DEM + Feature flag misuse | ENG-683548 | More users shown than monitored | S3 | P2 |
+| DEM + Deprecated feature flags | ENG-679420 | Netskope icon in Network Path Latency | S3 | P3 |
+| DEM + Config flag mismatch | ENG-431642 | Route control enabled without backend flags | S3 | P3 |
+| DEM + Sampling cancellation | ENG-789126 | Network and device events lost | S3 | P2 |
 | DEM + 3rd-party AV (CrowdStrike) | ENG-495212 | Config exceptions, DEM data lost | S3 | P2 |
-| DEM + Deprecated feature flags | (Predicted risk) | Incorrect dashboard display | S3 | P3 |
 | DEM + NPA host monitoring | (Predicted risk) | NPA host list out of sync with DEM config | S3 | P3 |
 | DEM + Re-enrollment | (Predicted risk) | Stale cert silently fails device health + app probe posts | S2 | P2 |
 
@@ -646,22 +767,36 @@ DEM client status reporting depends on the `ClientStatusHandler::prepareMessageF
 
 | Bug ID | Summary | Platform | Root Cause | Severity |
 |--------|---------|----------|------------|----------|
+| **ENG-421796** | Mac computers getting failed Disk consumption metrics | macOS | Day-1: Disk metric collection returns failure on macOS | S3 |
+| **ENG-424865** | NSCOM connection broken multiple times on macOS | macOS | Regression: Network watcher thread race — new interfaces pushed to vector during subsample iteration | S2 |
+| **ENG-429064** | Client not posting client status after enabling DEM | Windows | Day-1: Client status path not triggered when DEM first enabled | S2 |
 | **ENG-429954** | client_install_time changing too frequently in client_status | Windows | Install time updated on every config refresh instead of only at install | S3 |
+| **ENG-431642** | Route control enabled in client without backend flags | Windows | Day-1: DEM log tag on route control logs caused confusion; config flag mismatch | S3 |
+| **ENG-483200** | Frequent network events + crash when DEM device health enabled | Windows, macOS | Regression: Network watcher thread synchronization race condition | S2 |
 | **ENG-495212** | DEM config exceptions in customer environment | Windows | boost::filesystem::canonical exception with CrowdStrike interop; 3rd-party library issue | S3 |
 | **ENG-534944** | Monitored users not showing agents that were online | macOS | Regression from ENG-429954 fix: missed upgrade case where pre-R120 clients lack appinstalltimestamp | S2 |
+| **ENG-549966** | macOS client crash (DEM related) | macOS | Corner case: Crash during network interface disconnect events while DEM collecting | S1 |
 | **ENG-593503** | DEM thread stack overrun causes crash on tunnel disconnect | Windows | Thread stack corruption when DEM tasks still active during tunnel teardown | S1 |
 | **ENG-637576** | DEM tenant ID reset to 0 during config token rotation | Windows | Config update token rotation error resets tenant_id to '0', DEM posts wrong data | S2 |
+| **ENG-669888** | WiFi signal always shown as 0 in DEM UI | Windows | Hidden WiFi not enumerated by WlanGetNetworkBssList; fix uses WlanQueryInterface pconnAttributes | S3 |
+| **ENG-679420** | Netskope icon in Network Path Latency dashboard | Windows, macOS | Deprecated duplicateRccDataToGEF flag causes Polaris route control data sent to PDEM | S3 |
+| **ENG-683548** | More users shown than monitored | Windows, macOS | Wrong feature flag used as DEM service status indicator | S3 |
+| **ENG-748332** | Client status missing for device | Windows, macOS | enableDemClientStatus flag disabled via Ursa config while backend expects DEM flow | S3 |
+| **ENG-789126** | Network and device events missing for some users | Windows, macOS | Day-1/Enhancement: Events lost when sampling cancelled; fix dumps to metrics.json | S3 |
+| **ENG-802476** | Network throughput metrics missing in tenant UI | Windows | Day-1: Performance counter names hardcoded in English; fails on non-English OS locale | S2 |
+| **ENG-848014** | Site to POP connection time is high | Windows, macOS | Day-1: Negative app probe timing values from curl API return code used before validation | S3 |
 
 ### Bug Classification Summary
 
 | Category | Count | Percentage |
 |---|---|---|
-| **Regression** | 3 | 50% |
-| **Corner Case** | 3 | 50% |
-| **Test Gap** | 2 | 33% |
-| **Day-1** | 0 | 0% |
+| **Regression** | 4 | 22% |
+| **Day-1** | 7 | 39% |
+| **Corner Case** | 5 | 28% |
+| **Test Gap** | 4 | 22% |
+| **Enhancement** | 4 | 22% |
 
-> Note: Bugs can belong to multiple categories. The 50% regression rate is the highest among all DEM-relevant features and reflects the tight coupling between DEM and tunnel lifecycle.
+> Note: Bugs can belong to multiple categories. The high Day-1 count (39%) indicates that many DEM metric collection paths were never fully validated for edge cases (non-English OS, hidden WiFi, disk metrics on macOS). The regression bugs (ENG-424865, ENG-483200, ENG-534944) reflect tight coupling between DEM network watcher threads and platform-specific collection subsystems.
 
 ---
 

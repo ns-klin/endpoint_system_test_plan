@@ -1,6 +1,6 @@
 # 20. Supportability & Troubleshooting
 
-**Escalation Bug Count**: 6 | **Regression**: 0 (0%) | **Day-1**: 1 (17%) | **Test Gap**: 4 (67%)
+**Escalation Bug Count**: 20 | **Regression**: 3 (15%) | **Day-1**: 2 (10%) | **Test Gap**: 7 (35%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1676937854#gid=1676937854)**
 
@@ -20,7 +20,7 @@ NSClient provides a layered supportability architecture that spans local diagnos
 
 The highest-risk area in supportability is **Remote Log Collection with Secure Config** (S2): when `encryptClientConfig` is enabled, the log encryption public key file becomes unusable, silently breaking the entire remote log collection flow. The second critical concern is the **OTP backend crash** (ENG-573164), which disables the OTP feature after consecutive wrong attempts.
 
-Of the 6 bugs mapped to this chapter, 4 (67%) are test gaps where neither Dev nor QE had test coverage, making supportability one of the least-tested areas relative to its impact on support operations.
+Of the 13 bugs mapped to this chapter, 7 are test gaps and 3 are regressions. Remote log collection is particularly fragile: ENG-504528 (download failure on Windows), ENG-594892 (backend case-sensitivity issue), and ENG-630626 (decryption failure with per-user mode + encryption config) compound with the existing ENG-557778 to create multiple failure paths. Log packaging (ENG-932854, missing rotated log files) and supportability parameter notification spam (ENG-954726, admin emails every 5 minutes) further degrade the troubleshooting experience.
 
 ---
 
@@ -198,6 +198,12 @@ flowchart TD
 
     RISK_CONNECT["🟡 Warning: NSCom2 may timeout<br/>if service under heavy load"]
     CONNECT -.-> RISK_CONNECT
+
+    BUG_LOGROTATE["🔴 BUG ENG-932854<br/>Log bundle missing nsdebuglog.1.log<br/>during rotation"]
+    COLLECT -.-> BUG_LOGROTATE
+
+    BUG_IOSLOG["🔴 BUG ENG-446763<br/>iOS tunnel disconnect logging<br/>insufficient for diagnostics"]
+    WIN_LOGS -.->|iOS| BUG_IOSLOG
 ```
 
 **Files Included in Log Bundle**:
@@ -268,9 +274,20 @@ sequenceDiagram
         SVC->>SVC: FAIL - key not found
     else encryptClientConfig disabled
         SVC->>SVC: CSecFile::encode(nsdiag.zip, nsdiag.enc)
+
+        Note right of SVC: 🔴 BUG ENG-630626<br/>Decryption failure when<br/>per-user mode + encryption enabled
+
         SVC->>CLOUD: HTTPS POST nsdiag.enc
         CLOUD-->>SVC: 200 OK
     end
+
+    Note over MP,CLOUD: Backend log download
+
+    MP->>CLOUD: Download encrypted logs
+
+    Note right of MP: 🔴 BUG ENG-504528<br/>Client logs download failed<br/>"specified key does not exist"
+
+    Note right of MP: 🔴 BUG ENG-594892<br/>Failed to download client logs from UI<br/>case-sensitivity in cloud storage key
 ```
 
 **Node Risk Assessment**:
@@ -282,8 +299,9 @@ sequenceDiagram
 | nsdiag -w invocation | Medium | 30MB limit may truncate critical pcap files |
 | logencpublickey download | Low | Standard API download |
 | readLogEncPublicKeyFile() | **Critical** | **ENG-557778** -- file path mismatch with encryptClientConfig |
-| CSecFile::encode() | Low | Standard encryption when key is available |
+| CSecFile::encode() | **High** | **ENG-630626** -- decryption failure when per-user mode and encryption config are both enabled |
 | HTTPS POST upload | Medium | May fail behind restrictive proxies |
+| Backend log download | **High** | **ENG-504528** -- client logs download fails ("specified key does not exist"); **ENG-594892** -- case-sensitivity in cloud storage key name causes download failure from UI |
 
 **Confirmed Bug: ENG-557778 -- Remote Log Collection Fails After Secure Enrollment**
 
@@ -441,8 +459,14 @@ flowchart TD
     RECONFIG --> REENROLL[Re-enrollment required]
     FC --> FC_APPLY[Apply FailClose state change]
 
+    PARSE -->|bulkEnable/Disable| BULK[Bulk Client Enable/Disable]
+    BULK --> BUG_BULK["🔴 BUG ENG-622617<br/>Bulk Client Enable via Admin UI<br/>does not reflect on all devices"]
+
     RISK_FC["🟡 Warning: FailClose override<br/>can change security posture remotely"]
     FC_APPLY -.-> RISK_FC
+
+    BUG_EMAIL["🔴 BUG ENG-954726<br/>Admin gets emails every 5 minutes<br/>about log collection status"]
+    LOG -.-> BUG_EMAIL
 ```
 
 **Supportability Parameters Response Fields**:
@@ -541,9 +565,9 @@ Format flags are configured via bitmask:
 
 ## Windows
 
-**Bug Count**: 3 direct | **Key Gaps**: Remote log collection with Secure Config, OTP backend validation, Self-Protection + memory dump interaction
+**Bug Count**: 6 direct | **Key Gaps**: Remote log collection with Secure Config, OTP backend validation, Self-Protection + memory dump interaction, log download failures, log bundle completeness
 
-Windows has the richest nsdiag feature set including memory dump generation, WFP driver log capture, and Windows Event Log collection during Debug Mode. The most critical failure pattern for Windows supportability is the Secure Config + remote log collection interaction (ENG-557778), which breaks the primary remote diagnostic mechanism.
+Windows has the richest nsdiag feature set including memory dump generation, WFP driver log capture, and Windows Event Log collection during Debug Mode. The most critical failure pattern for Windows supportability is the Secure Config + remote log collection interaction (ENG-557778), which breaks the primary remote diagnostic mechanism. Additionally, ENG-504528 causes log download to fail with "specified key does not exist", ENG-630626 breaks log decryption when per-user mode is combined with encryption config, and ENG-932854 causes the log bundle to miss nsdebuglog.1.log during rotation timing.
 
 ### Windows-Specific Diagnostics
 
@@ -587,11 +611,40 @@ NSClient does not write to the Windows Event Log directly. However, service star
 
 **Bug ENG-566579** identified that FailClose log events did not contain sufficient information for support engineers to diagnose false-positive FailClose activations. The fix improved log messaging to include the specific trigger reason, gateway status, and tunnel state at the time of FailClose activation. This is a diagnostic quality improvement.
 
+### Windows Log Collection Bugs
+
+**Bug ENG-504528 -- Client Logs Download Failed**: When downloading client logs from the backend, the operation fails with "failed to download client logs - the specified key does not exist". The cloud storage key used to reference the uploaded log bundle does not match what the download API expects.
+
+| Field | Value |
+|---|---|
+| **Platform** | Windows |
+| **Regression** | No |
+| **Bug Type** | Corner Case |
+| **Automatable** | Yes |
+
+**Bug ENG-630626 -- Unable to Download Client Logs (Decryption Failure)**: When both the `encryptClientConfig` flag and per-user mode are enabled, the backend log decryption fails with `AttributeError: 'File_Decrypt' object has no attribute 'backup_pubkey'`. This is a regression introduced when the encryption feature flag was enabled without testing the per-user mode combination.
+
+| Field | Value |
+|---|---|
+| **Platform** | Windows & macOS |
+| **Regression** | Yes |
+| **Bug Type** | Test Gap |
+| **Automatable** | Yes |
+
+**Bug ENG-932854 -- Log Bundle Missing nsdebuglog.1.log**: When log collection is triggered at the exact moment of log rotation, the rotated file `nsdebuglog.1.log` is not included in the bundle. This is a timing-dependent corner case that is hard to reproduce.
+
+| Field | Value |
+|---|---|
+| **Platform** | Windows |
+| **Regression** | No (Day-1) |
+| **Bug Type** | Corner Case |
+| **Automatable** | No (timing-dependent) |
+
 ## macOS
 
-**Bug Count**: 1 shared (ENG-557778 affects all desktop platforms) | **Key Gaps**: sysdiagnose privilege escalation, crash dump collection timing
+**Bug Count**: 2 shared (ENG-557778 affects all desktop platforms, ENG-630626 affects Windows & macOS) | **Key Gaps**: sysdiagnose privilege escalation, crash dump collection timing, log decryption with per-user mode
 
-macOS supportability relies heavily on the System Extension architecture. The nsdiag binary requires `sudo` for sysdiagnose collection and outer packet capture. The most unique macOS diagnostic feature is the integration with macOS sysdiagnose, which collects extensive OS-level diagnostics including Network Extension state.
+macOS supportability relies heavily on the System Extension architecture. The nsdiag binary requires `sudo` for sysdiagnose collection and outer packet capture. The most unique macOS diagnostic feature is the integration with macOS sysdiagnose, which collects extensive OS-level diagnostics including Network Extension state. ENG-630626 (decryption failure when per-user mode + encryption config are both enabled) also affects macOS log collection workflows.
 
 ### macOS-Specific Diagnostics
 
@@ -694,6 +747,8 @@ adb logcat | grep -i "steer\|bypass\|domain"        # Steering-related
 
 ## iOS
 
+**Bug Count**: 1 direct | **Key Gaps**: Tunnel disconnect diagnostic logging
+
 ### iOS-Specific Diagnostics
 
 **Log Locations**: Logs are stored in the app container, accessible through:
@@ -702,6 +757,15 @@ adb logcat | grep -i "steer\|bypass\|domain"        # Steering-related
 - Remote log collection from the backend
 
 **sysdiagnose Integration**: On iOS, a sysdiagnose can be triggered by simultaneously pressing the power button and both volume buttons. The resulting file includes Network Extension logs.
+
+**Bug ENG-446763 -- Tunnel Consistently Getting Disconnected on iOS**: Tunnel disconnections on iOS are not accompanied by sufficient diagnostic logging, making it difficult to determine root cause. The fix is a logging improvement to capture more context around disconnect events. QE and Dev could not replicate the disconnect itself, but the logging gap was confirmed.
+
+| Field | Value |
+|---|---|
+| **Platform** | iOS |
+| **Regression** | No |
+| **Bug Type** | Corner Case |
+| **Automatable** | No |
 
 ---
 
@@ -734,6 +798,13 @@ ChromeOS uses a Chrome extension-based client. Debugging is done through:
 | nsdiag under multi-user load | ❌ | No GRS test covers concurrent nsdiag sessions |
 | NPA PCAP rotation | ❌ | **ENG-766017** -- no rotation integrity test |
 | Supportability params polling | ❌ | No dedicated test for param parsing and action dispatch |
+| Client log download (backend) | ❌ | **ENG-504528** -- no test for cloud storage key existence validation |
+| Backend log download (case-sensitivity) | ❌ | **ENG-594892** -- no test with mixed-case cloud storage key names |
+| Bulk Client Enable/Disable (backend) | ❌ | **ENG-622617** -- no E2E test for bulk enable via Admin UI reflecting on all devices |
+| Log decryption with per-user mode | ❌ | **ENG-630626** -- not tested with encryptClientConfig + per-user mode |
+| Log bundle during rotation | ❌ | **ENG-932854** -- no test for log collection during log file rotation |
+| Log collection status emails | ❌ | **ENG-954726** -- no test verifying admin notification frequency limits |
+| iOS tunnel disconnect logging | ❌ | **ENG-446763** -- no test for iOS disconnect diagnostic logging |
 
 ---
 
@@ -779,7 +850,12 @@ flowchart TD
     ENCRYPT -->|Yes| UPLOAD{Upload succeeded?}
 
     UPLOAD -->|No| PROXY_CHECK["Check proxy:<br/>grep 'proxy\|upload.*fail' nsdebuglog.log"]
-    UPLOAD -->|Yes| SUCCESS[Collection succeeded]
+    UPLOAD -->|Yes| DOWNLOAD{Backend download?}
+
+    DOWNLOAD -->|Failed| DL_FAIL["🔴 BUG ENG-504528 / ENG-594892<br/>Cloud storage key not found<br/>or case-sensitivity issue"]
+    DOWNLOAD -->|Success| DECRYPT_DL{Decrypt logs?}
+    DECRYPT_DL -->|Failed| DL_DECRYPT["🔴 BUG ENG-630626<br/>Decryption failure with<br/>per-user mode + encryption"]
+    DECRYPT_DL -->|Success| SUCCESS[Collection succeeded]
 ```
 
 ### Workflow 3: Debug Mode Issues
@@ -859,10 +935,16 @@ When a user needs to temporarily disable FailClose for troubleshooting, they mus
 | Feature A | Feature B | Risk | Bug References |
 |---|---|---|---|
 | Remote Log Collection | encryptClientConfig | Critical | ENG-557778 |
+| Remote Log Collection | Per-user mode + encryption | High | ENG-630626 |
+| Remote Log Collection | Backend cloud storage key | High | ENG-504528, ENG-594892 |
 | OTP | Backend Addonman | High | ENG-573164, ENG-475524 |
 | nsdiag IPC | Multi-user VDI | High | ENG-591721 |
+| Supportability Params | Bulk Enable/Disable | High | ENG-622617 |
+| Supportability Params | Log status notifications | Medium | ENG-954726 |
 | Debug Mode | Service Crash | Medium | ENG-587497, ENG-801565 |
 | PCAP Rotation | NPA Capture | Medium | ENG-766017 |
+| Log Collection | Log file rotation timing | Medium | ENG-932854 |
+| iOS Tunnel | Diagnostic logging | Low | ENG-446763 |
 | Self-Protection | Memory Dump | Low | ENG-487939 |
 | FailClose Log Events | Diagnostics Quality | Low | ENG-566579 |
 
@@ -878,6 +960,13 @@ When a user needs to temporarily disable FailClose for troubleshooting, they mus
 | **ENG-573164** | OTP disabled after consecutive wrong attempts | Backend addonman API crashes on incorrect OTP payload (related to ENG-475524) | Fix backend OTP API payload validation; rate-limit OTP check requests | Windows (backend) |
 | **ENG-591721** | NSCom2 deadlock in multi-user environment | NSComs module cannot handle concurrent socket connections between stAgentSvc and multiple UI instances | Fix NSComs communication module connection handling | Windows |
 | **ENG-766017** | NPA inner pcaps corrupted after rotation | PCAP rotation function writes header to SWG pcap file instead of NPA pcap file | Fix rotation function to write header to correct file | Windows & macOS |
+| **ENG-446763** | iOS tunnel disconnect logging insufficient for diagnostics | Tunnel disconnect events on iOS lack context in logs, making root cause analysis impossible | Logging improvement to capture more context around disconnect events | iOS |
+| **ENG-504528** | Client logs download failed ("specified key does not exist") | Cloud storage key used for uploaded log bundle does not match what the download API expects | Fix key name consistency between upload and download paths | Windows |
+| **ENG-594892** | Failed to download client logs from UI (case-sensitivity) | Backend uses case-sensitive cloud storage key lookup; key name case mismatch between upload and download | Normalize key names to consistent casing across upload/download APIs | Backend |
+| **ENG-622617** | Bulk Client Enable via Admin UI does not reflect on all devices | Backend cache clearing gap combined with a provisioner-side change causes bulk enable/disable to not propagate to all devices | Fix backend cache invalidation and provisioner integration for bulk operations | Backend |
+| **ENG-630626** | Unable to download client logs -- decryption failure | When both `encryptClientConfig` flag and per-user mode are enabled, `File_Decrypt` object lacks `backup_pubkey` attribute | Fix `File_Decrypt` to handle backup public key in per-user + encryption mode | Windows & macOS |
+| **ENG-932854** | Log bundle missing nsdebuglog.1.log during rotation | Log collection triggered at exact moment of log rotation misses the rotated file | Fix collection timing to pause rotation or retry when rotation is in progress | Windows |
+| **ENG-954726** | Admin gets emails every 5 minutes about log collection status | Supportability params polling (every 5 minutes) triggers repeated admin email notifications about log collection status without deduplication | Add deduplication or rate-limiting for admin log collection status notifications | All |
 
 ---
 
@@ -911,9 +1000,12 @@ When a user needs to temporarily disable FailClose for troubleshooting, they mus
 | Category | Scope | Examples in This Chapter |
 |---|---|---|
 | **Diagnostic Tool Failure** | nsdiag or debug mode malfunction | ENG-591721 (NSCom2 deadlock) |
-| **Remote Collection Failure** | Backend-triggered log upload fails | ENG-557778 (Secure Config path mismatch) |
+| **Remote Collection Failure** | Backend-triggered log upload fails | ENG-557778 (Secure Config path mismatch), ENG-504528 (download key not found), ENG-594892 (case-sensitivity), ENG-630626 (decryption failure) |
 | **OTP/Disable Failure** | OTP-based troubleshooting mechanism broken | ENG-573164 (backend crash) |
-| **Data Quality Issue** | Collected data is corrupt or incomplete | ENG-766017 (PCAP rotation), ENG-566579 (log events) |
+| **Backend Admin Failure** | Admin UI action not propagating | ENG-622617 (bulk enable not reflecting) |
+| **Data Quality Issue** | Collected data is corrupt or incomplete | ENG-766017 (PCAP rotation), ENG-566579 (log events), ENG-932854 (missing rotated log) |
+| **Notification Issue** | Excessive or incorrect admin notifications | ENG-954726 (email every 5 minutes) |
+| **Platform Logging Gap** | Insufficient diagnostic logging on platform | ENG-446763 (iOS disconnect logging) |
 | **Cross-Flow Diagnostic Gap** | Supportability fails due to interaction with another feature | ENG-557778 + FailClose compound failure |
 
 ---

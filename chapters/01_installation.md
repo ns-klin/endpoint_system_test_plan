@@ -1,6 +1,6 @@
 # 01. Installation & Upgrade
 
-**Escalation Bug Count**: 54 | **Regression**: 14 (26%) | **Day-1**: 9 (17%) | **Test Gap**: 12 (22%)
+**Escalation Bug Count**: 82 | **Regression**: 18 (22%) | **Day-1**: 12 (15%) | **Test Gap**: 16 (20%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=2076150392#gid=2076150392)**
 
@@ -50,6 +50,8 @@ flowchart TD
     IDP_GEN -->|Hostname contains 'idp'| BUG_IDP["🔴 BUG ENG-543228<br/>MDM fallback to IDP<br/>(macOS)"]
     HASH -->|VDI environment| BUG_VDI["🔴 BUG ENG-466704<br/>Citrix VDI random failure<br/>(Windows)"]
     
+    EMAIL -.->|Template edited| BUG_TEMPLATE["🔴 BUG ENG-577598<br/>Email Invitation Expired<br/>template edits not reflected<br/>(Windows & Mac)"]
+    
     DOWNLOAD -->|Success| VALIDATE
     IDP_GEN --> VALIDATE
     HASH --> VALIDATE
@@ -63,7 +65,7 @@ flowchart TD
 
 ## Windows
 
-**Bug Count**: 24 direct + 3 shared with macOS | **Key Gaps**: VDI scenarios, AOAC, Domain Controller, Self-Protection + Upgrade
+**Bug Count**: 30 direct + 4 shared with macOS | **Key Gaps**: VDI scenarios, AOAC, Domain Controller, Self-Protection + Upgrade, OTP, Scheduled Upgrade
 
 Windows installation uses MSI (Microsoft Installer) with a series of Custom Actions (CA_*) that handle driver installation, service registration, enrollment, and branding. The `stAgentSvc` service polls MP every 240 minutes for new versions (via `CConfig::tryToUpgradeClient()` in `lib/nsConfig/config.cpp`). A separate `stAgentSvcMon` monitor process handles MSI install progress monitoring and retry on failure.
 
@@ -148,6 +150,8 @@ flowchart TD
     UI --> POST["CA_PostInstallSuccess<br/>1. Init config + proxy detect<br/>2. Restore enrollment tokens<br/>3. Copy logs (v112→v113+)<br/>4. Report status to MP"]
     POST -->|Token restore failed| RISK_RESTORE["🟡 Warning: Token restore failure<br/>after cross-arch upgrade"]
     POST -->|Success| DONE[Installation Complete]
+    POST -.->|ProductID registry change| BUG_GRAYOUT["🔴 BUG ENG-781465<br/>Client gray out after<br/>upgrading 126→129"]
+    POST -.->|NSC silently removed| BUG_REMOVED["🔴 BUG ENG-951409<br/>NSC suddenly removed<br/>during upgrade to 135"]
 
     RISK_PARAM --> PARSE
     RISK_LAUNCH --> LAUNCH
@@ -176,7 +180,7 @@ flowchart TD
 | CA_InstallDriver | 🟡 Medium | Predicted: driver signature + Secure Boot conflict (Error 1275) |
 | CA_InstallAgentService | 🟡 Medium | Predicted: service dependency (BFE not running) or startup order issue |
 | CA_nsAgentUIStart | 🟢 Low | UI process launch; failure is non-critical |
-| CA_PostInstallSuccess | 🟡 Medium | Multi-step: init config, restore tokens (cross-arch risk), migrate logs, report status |
+| CA_PostInstallSuccess | 🔴 High | **ENG-781465** — ProductID registry change causes gray-out; **ENG-951409** — NSC silently removed during upgrade |
 
 **Confirmed Bug Mapping**:
 
@@ -184,6 +188,8 @@ flowchart TD
 |---|---|---|---|
 | FindRelatedProducts | ENG-446703 (MSI pile-up) | Registry residue causing duplicate detection | ❌ Not covered |
 | CA_GetNsbrandingJsonFile | ENG-497728 (cache key collision) | Email vs UPN branding cache design flaw | ❌ Not covered |
+| CA_PostInstallSuccess | ENG-781465 (client gray out) | ProductID in registry changes due to system settings, client not enabled | ❌ Not covered |
+| CA_PostInstallSuccess | ENG-951409 (NSC suddenly removed) | UI dismissal after enrollment causes silent removal during upgrade | ❌ Not covered |
 
 **Predicted Risk Points (No Known Escalation)**:
 
@@ -229,6 +235,7 @@ sequenceDiagram
         
         SVC->>SVC: Verify signature
         SVC->>SVC: Check upgrade window
+        Note right of SVC: 🔴 BUG ENG-756815<br/>Scheduled upgrade<br/>not triggering
         
         alt Self-Protection enabled
             SVC->>SVC: Check disableWinStopServiceProtection flag
@@ -270,6 +277,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | Package download | ENG-446703 (MSI pile-up) | S2 | Multiple MSIs accumulate consuming disk space | ❌ Not covered |
 | Upgrade window check | ENG-733657 (flag missing) | S2 | R126→R129 upgrade completely fails | ⚠️ Partial — `upgrade_with_failclose/test_p0.py::test_01_auto_upgrade_with_failclose` |
+| Upgrade schedule | ENG-756815 (schedule not working) | S3 | 3rd Wed monthly schedule and other schedule combinations fail | ❌ Not covered |
 | Version rollback | ENG-601667 (wrong version reported) | S3 | Backend displays wrong version | ❌ Not covered |
 
 **Predicted Risk Points**:
@@ -570,7 +578,7 @@ See [Standard Verification Checklist](#standard-verification-checklist-per-platf
 
 ## macOS
 
-**Bug Count**: 8 direct + 3 shared with Windows | **Key Gaps**: System Extension restart, AOAC/Dark Wake, DHCP interop
+**Bug Count**: 11 direct + 4 shared with Windows | **Key Gaps**: System Extension restart, AOAC/Dark Wake, DHCP interop, OTP, Admin Uninstall Bypass, macOS Compatibility
 
 macOS installation uses a PKG installer that deploys a System Extension for network filtering. The uninstall process has two modes: **UPDATE** (preserves config, certs, device ID for upgrades) and **FULL** (removes everything). A key difference from Windows is that auto-upgrade is triggered via **launchd** rather than an internal monitor process.
 
@@ -626,11 +634,14 @@ flowchart TD
     FULL --> REPORT_ORDER{"post_uninstall<br/>before<br/>uninstallAuxiliarySvc?"}
     REPORT_ORDER -->|Correct order| REPORT_UNINSTALL[Report Uninstall to MP]
     REPORT_ORDER -->|Wrong order +<br/>clientEncryptBranding=1| BUG_UNINSTALL["🔴 BUG ENG-671884<br/>Uninstall status not<br/>reported (encrypted branding<br/>inaccessible)"]
+    FULL -.->|Admin user bypasses<br/>password protection| BUG_ADMINUNINSTALL["🔴 BUG ENG-690881<br/>Admin can uninstall NSC<br/>bypassing password via CLI"]
     REPORT_UNINSTALL --> DONE_UNINSTALL[Uninstall Complete]
 
     FRESH --> SYSEXT["Load System Extension<br/>(AppProxy + DNSProxy)"]
     UPDATE --> SYSEXT
     VERIFY --> MODE
+
+    MODE -.->|macOS UI changes<br/>cause compatibility issue| BUG_COMPAT["🔴 BUG ENG-680208<br/>NS client compatibility<br/>issues on macOS"]
 
     SYSEXT --> SVC_START["Start stAgentSvc<br/>(launchd KeepAlive)"]
     SVC_START --> NPA_CHECK{NPA Enabled?}
@@ -653,8 +664,11 @@ flowchart TD
 |---|---|---|---|---|
 | launchd trigger | ENG-472565 (not triggered) | S2 | R111→R114 upgrade does not start | ⚠️ Partial — `auto_upgrade/test_p0.py::test_05_auto_upgrade` exists but Linux only |
 | Uninstall status | ENG-671884 (status not reported) | S3 | Backend doesn't know device was uninstalled | ❌ Not covered |
+| Uninstall protection | ENG-690881 (admin bypass) | S2 | Admin-level user can uninstall NSC via CLI bypassing password | ❌ Not covered |
 | MDM install | ENG-543228 (IDP misjudge) | S2 | JAMF script incorrectly detects enrollment mode | ❌ Not covered |
+| Install compatibility | ENG-680208 (macOS compat) | S3 | Mac UI changes cause compatibility issues on install/upgrade path | ❌ Not covered |
 | NPA after upgrade | ENG-773191 (transparent proxy stops) | S1 | NPA traffic not tunneled after R130→R131 upgrade on macOS 15.x | ❌ Not covered |
+| OTP disable | ENG-832690 (OTP not working) | S2 | Disable Internet Security by OTP not working on Mac | ❌ Not covered |
 | Version report | ENG-601667 (wrong version on rollback) | S3 | Backend displays wrong version | ❌ Not covered |
 
 ## Linux
@@ -730,7 +744,7 @@ flowchart TD
 
 ## Android
 
-**Bug Count**: 1 direct | **Key Gaps**: Xiaomi enrollment, app store upgrade path
+**Bug Count**: 2 direct | **Key Gaps**: Xiaomi enrollment, app store upgrade path, OTP + NPA interaction
 
 Android installation is handled through Google Play Store distribution. The client-side installation complexity is lower than desktop platforms, but device-specific issues (e.g., Xiaomi IDP enrollment) arise from vendor customizations.
 
@@ -759,6 +773,8 @@ flowchart TD
     LARGE_CHECK -->|Normal| VPN_PROFILE
     LARGE_CHECK -->|30K+ domains| BUG_LARGE["🔴 BUG ENG-872456<br/>Large config exceeds<br/>buffer limit — crash"]
 
+    VPN_PROFILE -.->|OTP + Battery Saver<br/>FF conflict| BUG_OTPNPA["🔴 BUG ENG-647666<br/>NPA disconnected for all<br/>Android users after OTP enable"]
+
     style DONE fill:#4CAF50,color:#fff
 ```
 
@@ -767,15 +783,14 @@ flowchart TD
 | Bug ID | Problem Summary | Root Cause | Fix |
 |--------|----------------|-----------|-----|
 | **ENG-424991** | Xiaomi Android enrollment failure | Xiaomi-specific IDP enrollment issue | Purchased Xiaomi device for regression testing |
+| **ENG-647666** | NPA disconnected for all Android users after OTP enable | Conflict between `enableSaveBatteryForSleepMode` and OTP feature flags | Fix feature flag interaction |
 | **ENG-872456** | 30K+ domains crash (shared with ChromeOS) | Large steering config exceeds buffer limit | Add volume test data preparation |
-
-*No Android-specific test cases identified for Installation & Upgrade.*
 
 ---
 
 ## iOS
 
-**Bug Count**: 1 direct | **Key Gaps**: Internal app access after upgrade
+**Bug Count**: 2 direct | **Key Gaps**: Internal app access after upgrade, Email invite template iOS link
 
 iOS installation is managed through Apple App Store or MDM (e.g., Intune, JAMF). The primary risk area is regression bugs where upgrades break existing functionality, as seen with ENG-450735 where internal apps became inaccessible after R114.
 
@@ -804,6 +819,8 @@ flowchart TD
     REGRESSION_CHECK -->|No| BUG_REGRESS["🔴 BUG ENG-450735<br/>Internal apps inaccessible<br/>after R114 upgrade"]
     BUG_REGRESS -.->|Root cause| RISK_FIX["🟡 Warning: Regression from<br/>ENG-441957 fix"]
 
+    START -.->|Email invite with<br/>multiple iOS links| BUG_IOSLINK["🔴 BUG ENG-792144<br/>Multiple iOS links in email<br/>invite leads to invalid<br/>App Store link"]
+
     style DONE fill:#4CAF50,color:#fff
 ```
 
@@ -812,6 +829,7 @@ flowchart TD
 | Bug ID | Problem Summary | Root Cause | Fix |
 |--------|----------------|-----------|-----|
 | **ENG-450735** | Internal apps inaccessible after R114 upgrade | Regression introduced by ENG-441957 fix | Add monthly regression coverage |
+| **ENG-792144** | Multiple iOS links in email invite leads to invalid App Store link | Two instances of `{NS_IOSCLIENT}` variable in email template produces invalid link | Fix email template variable handling for iOS links |
 
 ## ChromeOS
 
@@ -855,7 +873,7 @@ flowchart TD
 
 ## Backend
 
-**Bug Count**: 2 | **Key Gaps**: JWT validation, branding cache
+**Bug Count**: 3 | **Key Gaps**: JWT validation, branding cache, downloader API security
 
 Backend issues affect enrollment across all platforms. The branding cache key collision (ENG-497728) is particularly insidious — the provisioner's common code doesn't differentiate between email-based and UPN-based enrollment cache keys, causing wrong branding to be served silently.
 
@@ -879,7 +897,11 @@ flowchart TD
     CORRECT --> CONFIG_DL[Config Download]
     BUG_CACHE --> CONFIG_DL
 
-    CONFIG_DL --> NPA_CHECK{NPA Addon<br/>Config Needed?}
+    CONFIG_DL --> DL_API{Package Download<br/>via /dlr/:ostype/get}
+    DL_API -->|Activation key present| NPA_CHECK{NPA Addon<br/>Config Needed?}
+    DL_API -->|Activation key missing<br/>after R131 change| BUG_DLR["🔴 BUG ENG-768398<br/>Downloader security enhancement<br/>breaks customer download URLs"]
+    BUG_DLR --> NPA_CHECK
+
     NPA_CHECK -->|No| DONE[Enrollment Complete]
     NPA_CHECK -->|Yes| JWT{JWT Signature<br/>Validation}
     JWT -->|Correct API version| DONE
@@ -894,6 +916,7 @@ flowchart TD
 |--------|----------------|-----------|-----|
 | **ENG-497728** | Email vs UPN branding cache key collision | Provisioner code doesn't differentiate email and UPN cache keys | Add qualifier to cache key |
 | **ENG-608191** | NPA addon config JWT signature issue | Wrong authorize version used (V7 instead of V5) | Cover V2/V5/V7 API compatibility |
+| **ENG-768398** | Revert Downloader Security Enhancement | R131 update to `/dlr/:ostype/get` enforced activation key in URL; customers using the internal endpoint were impacted | Revert activation key enforcement on `/dlr/:ostype/get` |
 
 ---
 
@@ -925,6 +948,10 @@ flowchart TD
     SP -->|"selfProtectionEnabled"| BLOCK["Blocks: process kill,<br/>file modify, registry edit"]
     SP -->|"🔴 ENG-733657"| BUG_SP["disableWinStopServiceProtection<br/>must be true for upgrade"]
     BLOCK -->|"BootFailureCount >= 2"| RISK_BOOT["🟡 Warning: Self-protection<br/>auto-disables after 2 crashes"]
+    BLOCK -.->|"Outer pcap blocked"| BUG_PCAP["🔴 BUG ENG-457109<br/>Unable to run outer pcap<br/>after R113 upgrade"]
+    BLOCK -.->|"Protection bypass"| BUG_BYPASS["🔴 BUG ENG-718773<br/>Tamperproof protection<br/>bypass"]
+    BLOCK -.->|"nsdiag blocked"| BUG_NSDIAG["🔴 BUG ENG-729324<br/>nsdiag.exe not working<br/>with tamperproof after upgrade"]
+    SP -.->|"ProductID change<br/>after upgrade"| BUG_GRAY["🔴 BUG ENG-781465<br/>Client gray out after<br/>upgrading 126→129"]
 
     LP -->|"v112→v113+ migration"| MIGRATE["Logs: Public → ProgramData<br/>Renamed with version suffix"]
     LP -->|Upgrade mode| PRESERVE["UPDATE: preserve config, certs, device ID<br/>FULL: remove everything"]
@@ -996,7 +1023,55 @@ Self-Protection uses the `Stadrv` WFP driver to protect Netskope processes, file
 
 **EPDLP Virtualization Folders** (also protected): `C:\Program Files\Netskope\EPDLP\win\nsvirt-backup`, `nsvirt-cache`
 
+**Self-Protection / Tamperproof Confirmed Bugs**:
+
+| Bug ID | Problem Summary | Root Cause | Platform |
+|--------|----------------|-----------|----------|
+| **ENG-457109** | Unable to run outer pcap after upgrading to R113 | R113 log improvement refactor caused regression — self-protection blocks pcap | Windows |
+| **ENG-718773** | Tamperproof protection bypass | Protection bypass vulnerability in self-protection mechanism | Windows |
+| **ENG-729324** | nsdiag.exe not working with tamperproof enabled after upgrade | Tamperproof removes READ permission; nsdiag hangs; `allowProcessReadPermission` flag added as fix | Windows |
+| **ENG-781465** | NS client gray out after upgrading from 126 to 129 | ProductID in registry changes due to system settings, client not enabled | Windows |
+
 **Key Code**: `stAgent/stadrv/stadrv6x/selfprotection/SystemProtectionMgr.cpp` — `enableSystemProtection()`, `disableSystemProtection()`
+
+### OTP (One-Time Password) During Install/Upgrade
+
+OTP provides a mechanism for admins to temporarily disable the NSClient (Internet Security, NPA, etc.) via a one-time password. OTP interacts with installation and upgrade because enabling OTP feature flags can break NPA connectivity (Android) or fail to disable services (macOS). The OTP backend API also has validation issues that surface during device management.
+
+```mermaid
+flowchart TD
+    OTP_REQ["Admin Requests OTP<br/>from Devices Page"] --> BACKEND["Backend OTP API<br/>(addonman)"]
+    BACKEND --> LOOKUP{User/Device/TenantID<br/>Found?}
+    LOOKUP -->|Yes| GENERATE[Generate OTP]
+    LOOKUP -->|No| BUG_NOTFOUND["🔴 BUG ENG-529561<br/>OTP of given user/device/<br/>tenantID not found"]
+    
+    GENERATE --> CLIENT["Client Receives OTP"]
+    CLIENT --> PLATFORM{Platform?}
+    
+    PLATFORM -->|Windows| WIN_OTP["Apply OTP:<br/>Disable Internet Security"]
+    PLATFORM -->|macOS| MAC_OTP["Apply OTP:<br/>Disable Internet Security"]
+    PLATFORM -->|Android| ANDROID_OTP["Apply OTP:<br/>Disable Internet Security"]
+    
+    WIN_OTP --> DONE[OTP Applied Successfully]
+    
+    MAC_OTP --> MAC_CHECK{OTP Disable<br/>Working?}
+    MAC_CHECK -->|Yes| DONE
+    MAC_CHECK -->|No| BUG_MACOTP["🔴 BUG ENG-832690<br/>Disable Internet Security<br/>by OTP not working on Mac"]
+    
+    ANDROID_OTP --> NPA_CHECK{NPA + OTP<br/>+ Battery Saver FF?}
+    NPA_CHECK -->|No conflict| DONE
+    NPA_CHECK -->|enableSaveBatteryForSleepMode<br/>+ OTP both enabled| BUG_ANDROIDOTP["🔴 BUG ENG-647666<br/>NPA disconnected for all<br/>Android users after OTP enable"]
+
+    style DONE fill:#4CAF50,color:#fff
+```
+
+**OTP Confirmed Bugs**:
+
+| Bug ID | Problem Summary | Root Cause | Platform |
+|--------|----------------|-----------|----------|
+| **ENG-529561** | OTP of given user/device/tenantID not found | Backend OTP API lookup failure on Devices page | Windows |
+| **ENG-647666** | NPA disconnected for all Android users after OTP enable | Conflict between `enableSaveBatteryForSleepMode` and OTP feature flags | Android |
+| **ENG-832690** | Disable Internet Security by OTP not working on Mac | NPLAN-5196 feature code merge removed existing OTP code, breaking OTP and Master password | macOS |
 
 ### Log and Config File Persistence Across Upgrades
 
@@ -1108,9 +1183,12 @@ The core problem: during an upgrade, the service must stop (tearing down the tun
 | Interaction | Known Bugs | Severity | Test Priority |
 |---|---|---|---|
 | Upgrade + FailClose | ENG-733657, ENG-751720 | **S1** | P1 |
+| Upgrade + Self-Protection / Tamperproof | ENG-457109, ENG-718773, ENG-729324, ENG-781465 | **S2** | P1 |
 | VDI + enrollment + FailClose | ENG-570306, ENG-752117 | **S2** | P2 |
 | Proxy + Upgrade + Tunnel | ENG-463329, ENG-593814 | **S2** | P2 |
 | Upgrade + NPA | ENG-773191 | **S2** | P1 |
+| OTP + NPA (Android) | ENG-647666 | **S2** | P2 |
+| OTP + macOS | ENG-832690 | **S2** | P2 |
 | Large config (30K) + Upgrade | (Predicted risk) | **S2** | P2 |
 
 ## Appendix A: Bug Quick Reference
@@ -1148,6 +1226,20 @@ The core problem: during an upgrade, the service must stop (tearing down the tun
 | **ENG-846555** | Linux auto-upgrade + security hardening failure | Install script executes from /tmp; fails if /tmp mounted as noexec | If /tmp has noexec, use /opt/netskope/stagent/makeself instead | Linux |
 | **ENG-872456** | 30K+ domains crash Android/ChromeOS | Large domain steering config exceeds buffer limit | Add volume test data preparation | ChromeOS |
 | **ENG-925894** | Amazon Workspaces installation failure | Smart card DLL missing at VDI startup, DLL loading timing controlled by OS driver scheduler | Corner case, hard to reproduce | Windows |
+| **ENG-457109** | Unable to run outer pcap after upgrading to R113 | R113 log improvement refactor caused self-protection regression blocking pcap | Add self-protection + pcap test case | Windows |
+| **ENG-529561** | OTP of given user/device/tenantID not found | Backend OTP API lookup failure on Devices page | Add backend OTP API negative test case | Windows |
+| **ENG-577598** | Email Invitation Expired template edits not reflected | Template customizations saved but not rendered on page | Add email template validation test case | Windows & Mac |
+| **ENG-647666** | NPA disconnected for all Android users after OTP enable | Conflict between `enableSaveBatteryForSleepMode` and OTP feature flags | Fix feature flag interaction | Android |
+| **ENG-680208** | NS client compatibility issues on macOS | Mac UI changes introduced compatibility issues (internally reported via ENG-536868 & ENG-528321) | Fix macOS UI compatibility | macOS |
+| **ENG-690881** | Admin-level user can uninstall NSC bypassing password | CLI command `Remove Netskope Client auto_uninstall` skips password check | Add password check before CLI uninstall | macOS |
+| **ENG-718773** | Tamperproof protection bypass | Self-protection mechanism has bypass vulnerability | Fix tamperproof protection enforcement | Windows |
+| **ENG-729324** | nsdiag.exe not working with tamperproof after upgrade | Tamperproof removes READ permission; nsdiag hangs; `allowProcessReadPermission` flag added | Enable `allowProcessReadPermission` flag for nsdiag | Windows |
+| **ENG-756815** | Client auto-upgrade schedule not working | 3rd Wed monthly schedule and other schedule combinations fail | Fix schedule parsing for all combinations (daily, weekly, monthly) | Windows |
+| **ENG-768398** | Revert Downloader Security Enhancement | R131 update to `/dlr/:ostype/get` enforced activation key; impacted customers using internal endpoint | Revert activation key enforcement | Backend |
+| **ENG-781465** | NS client gray out after upgrading from 126 to 129 | ProductID in registry changes due to system settings, client not enabled | Fix client to handle ProductID registry changes | Windows |
+| **ENG-792144** | Multiple iOS links in email invite leads to invalid App Store link | Two instances of `{NS_IOSCLIENT}` variable in email template produces invalid link | Fix email template variable handling for iOS | iOS |
+| **ENG-832690** | Disable Internet Security by OTP not working on Mac | NPLAN-5196 feature code merge removed existing OTP code | Restore OTP and Master password code path | macOS |
+| **ENG-951409** | NSC suddenly removed during upgrade to 135 | UI dismissal after enrollment behavior not tested; NSC silently removed | Fix UI dismissal logic during upgrade | Windows |
 
 ## Appendix B: Methodology
 

@@ -1,6 +1,6 @@
 # 14. Proxy Detection & Management
 
-**Escalation Bug Count**: 5 | **Day-1**: 2 (40%) | **Regression**: 2 (40%) | **Test Gap**: 1 (20%)
+**Escalation Bug Count**: 8 | **Day-1**: 2 (40%) | **Regression**: 2 (40%) | **Test Gap**: 1 (20%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1950109951#gid=1950109951)**
 
@@ -204,6 +204,10 @@ flowchart TD
 
     BUG_593814["🔴 BUG ENG-593814<br/>addonHost not populated after reboot<br/>causes detection to use wrong URL"]
     BUG_463329["🔴 BUG ENG-463329<br/>User session not available after upgrade<br/>impersonation fails, proxy list lost"]
+
+    RESULT -.->|Android| BUG_394366["🔴 ENG-394366<br/>Android devices unable to login<br/>to MS Teams due to reverse proxy"]
+    HEALTH -.->|Slowness| BUG_487256["🔴 ENG-487256<br/>Slowness/upload failures<br/>with Workday/Teams via proxy"]
+    DETECT -.->|EPoC| BUG_505439["🔴 ENG-505439<br/>Explicit Proxy on<br/>port 80 misconfiguration"]
 
     style DETECT fill:#4A90D9,color:#fff
     style HEALTH fill:#F5A623,color:#fff
@@ -1089,6 +1093,9 @@ During upgrade, the NSClient service restarts. The new service instance runs bef
 | ENG-406879 | Proxy details cached after proxy removal | Windows | Proxy list not cleared when system proxy removed; stale proxy causes tunnel connection attempts to fail | S3 | Day-1 |
 | ENG-765691 | Alternate steering check fails in VDI multi-user (disconnected user impersonation) | Windows | Alternate steering check impersonates disconnected user session; impersonation fails; proxy detection returns empty; user tunnel broken | S2 | Day-1 |
 | ENG-649593 | ACK mangle with local proxy + cert-pinned bypass | Windows | Cert-pinned app bypasses tunnel but goes through local proxy; bypass-by-tunneling logic incorrect for HTTP through proxy; ACK mangled; connection drops | S3 | Regression |
+| [ENG-394366](https://netskope.atlassian.net/browse/ENG-394366) | [Reybanpac] Android devices with NSClient are unable to login to MS Teams due of |
+| [ENG-487256](https://netskope.atlassian.net/browse/ENG-487256) | [Fannie Mae] Users reporting slowness/upload failures with Workday/Microsoft Tea |
+| [ENG-505439](https://netskope.atlassian.net/browse/ENG-505439) | EPoC where EP is Netskope EP 163.116.128.80 (Port 80) |
 
 ---
 

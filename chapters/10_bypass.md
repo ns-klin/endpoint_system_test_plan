@@ -1,6 +1,6 @@
 # 10. Bypass Mechanisms
 
-**Escalation Bug Count**: 33 | **Regression**: 9 (27%) | **Day-1**: 13 (39%) | **Test Gap**: 6 (18%)
+**Escalation Bug Count**: 73 | **Regression**: 13 (25%) | **Day-1**: 19 (36%) | **Test Gap**: 10 (19%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=384303965#gid=384303965)**
 
@@ -77,6 +77,15 @@ graph TB
     BUG_API["🔴 BUG ENG-595031<br/>Wrong API endpoint for<br/>dynamic cert-pinned list"]
     BYP -.-> BUG_API
 
+    BUG_NPA_SVC["🔴 BUG ENG-577918<br/>NPA service not restarted<br/>after tun device reset"]
+    DOP -.-> BUG_NPA_SVC
+
+    BUG_CPU["🔴 BUG ENG-729176<br/>High CPU from massive<br/>SMB connections in Web mode"]
+    FD -.-> BUG_CPU
+
+    BUG_VPN_INTEROP["🔴 BUG ENG-805334<br/>Citrix/Cisco VPN interop<br/>DNS failure at WFP layer"]
+    FD -.-> BUG_VPN_INTEROP
+
 ```
 
 ### Config File Summary
@@ -117,12 +126,14 @@ flowchart TD
     UDP -->|No| IPV6{IPv6 + No Hostname<br/>+ Not Proxy?}
 
     UDP_FLOW -.-> BUG_UDP["🔴 BUG ENG-448002<br/>UDP 3478 steered<br/>in Web mode"]
+    UDP_FLOW -.-> BUG_QUIC["🔴 BUG ENG-402499<br/>QUIC UDP/443 traffic<br/>not steered on Android"]
 
     IPV6 -->|Yes| IPV6_CFG{blockAllExisting<br/>Ipv6ConnsNoHostname?}
     IPV6_CFG -->|Yes| BLOCK[PKT_ACTION_BLOCK]
     IPV6_CFG -->|No| BYPASS_IPV6[PKT_ACTION_BYPASS]
 
     IPV6 -.-> BUG_IPV6["🔴 BUG ENG-654108<br/>IPv6 exception at service<br/>vs driver level"]
+    IPV6 -.-> BUG_IPV6_DNS["🔴 BUG ENG-671659<br/>iOS not honoring IPv6<br/>local link DNS"]
 
     IPV6 -->|No| ADDON{Hostname ==<br/>addonChecker or<br/>authProxy?}
     ADDON -->|Yes + FailClose| BYPASS_ADDON[PKT_ACTION_BYPASS]
@@ -161,6 +172,8 @@ flowchart TD
 
     FC_CHECK -.-> BUG_FC["🔴 BUG ENG-895081<br/>FailClose not dropping<br/>after reboot"]
 
+    PKT -.-> BUG_CRASH["🔴 BUG ENG-747635<br/>Client crash on Win10<br/>massive connection churn"]
+
     style BYPASS_LOCAL fill:#4CAF50,color:#fff
     style BYPASS_DOMAIN fill:#4CAF50,color:#fff
     style BYPASS_IP fill:#4CAF50,color:#fff
@@ -176,10 +189,10 @@ flowchart TD
 
 | Node | Risk | Assessment |
 |---|---|---|
-| Incoming TCP SYN Packet | 🟢 Low | Standard entry point |
+| Incoming TCP SYN Packet | 🔴 High | **ENG-747635** — Client crash on Windows 10 during massive connection creation/deletion churn |
 | ICMP pass-through | 🟢 Low | ICMP always continues to tunnel |
-| UDP Bypass Flow | 🔴 High | **ENG-448002** — UDP 3478 steered in Web mode when custom port configured |
-| IPv6 + No Hostname | 🔴 High | **ENG-654108** — IPv6 exception handling at service vs driver level causes Citrix VPN traffic issues |
+| UDP Bypass Flow | 🔴 High | **ENG-448002** — UDP 3478 steered in Web mode when custom port configured; **ENG-402499** — QUIC UDP/443 traffic not steered on Android |
+| IPv6 + No Hostname | 🔴 High | **ENG-654108** — IPv6 exception handling at service vs driver level causes Citrix VPN traffic issues; **ENG-671659** — iOS not honoring IPv6 local link DNS via hotspot |
 | Local IP Bypass | 🟡 Medium | Depends on nsexception.json integrity (**ENG-739968** race condition) |
 | Cert-Pinned App List | 🔴 High | **ENG-525399** — Regex pattern causes ALL traffic bypass; **ENG-595031** — Wrong API endpoint |
 | Cert-Pin Action | 🔴 High | **ENG-718498** — DNS TCP bypassed even with cert-pinned block |
@@ -194,8 +207,11 @@ flowchart TD
 
 | Flow Step | Known Bugs | Root Cause | Automation |
 |---|---|---|---|
+| Incoming Packet | ENG-747635 (client crash) | Crash on Windows 10 during massive concurrent connection creation/deletion | ❌ Not covered |
 | UDP Bypass | ENG-448002 (UDP 3478 steered) | Custom ports with All traffic/Web mode steering and bypass combination | ❌ Not covered |
+| UDP Bypass | ENG-402499 (QUIC not steered) | QUIC protocol (UDP/443) cannot be supported by proxy; Android traffic not steered | ❌ Not covered |
 | IPv6 Handling | ENG-654108 (service vs driver) | R122 CFW mode change moved exception handling to service level | ❌ Not covered |
+| IPv6 Handling | ENG-671659 (IPv6 local link DNS) | iOS not honoring IPv6 local link DNS when connected via hotspot | ❌ Not covered |
 | Cert-Pinned Match | ENG-525399 (ALL traffic bypass) | Native apps regex on cert-pinned apps bypasses everything | ❌ Not covered |
 | Cert-Pinned Match | ENG-595031 (wrong API) | Client calls `steering/pinnedapps` instead of `steering/dynamicpinnedapps` | ❌ Not covered |
 | Cert-Pinned Block | ENG-718498 (DNS TCP leak) | DNS TCP traffic from blocked cert-pinned app is bypassed | ❌ Not covered |
@@ -233,6 +249,12 @@ flowchart TD
     WIN_CHECK -.-> BUG_FF["🔴 BUG ENG-710784<br/>avoidDisruptingBypass FF<br/>not working in Citrix DaaS"]
     DEFAULT -.-> BUG_SESSION["🔴 BUG ENG-753965<br/>Incorrect session ID<br/>in connection cache"]
 
+    CACHE_T -.-> BUG_FLAP["🔴 BUG ENG-533981<br/>Android tunnel flaps<br/>invalidate cache entries"]
+    CACHE_T -.-> BUG_DROP["🔴 BUG ENG-592681<br/>Android tunnel dropped<br/>often on network switch"]
+    CACHE_B -.-> BUG_STUCK["🔴 BUG ENG-652754<br/>Android stuck connecting<br/>unreliable network"]
+    DATA -.-> BUG_STUCK2["🔴 BUG ENG-917549<br/>Android stuck connecting<br/>WiFi to mobile data switch"]
+    WIN_CHECK -.-> BUG_VDI_SWG["🔴 BUG ENG-918131<br/>VDI multi-session SWG<br/>tunneling broken intermittently"]
+
     style BYPASS fill:#4CAF50,color:#fff
     style BYPASS2 fill:#4CAF50,color:#fff
     style BYPASS3 fill:#4CAF50,color:#fff
@@ -244,8 +266,13 @@ flowchart TD
 
 | Flow Step | Known Bugs | Root Cause | Automation |
 |---|---|---|---|
+| Tunnel Connection Cache | ENG-533981 (tunnel flaps) | Android tunnel flaps during DNS health check cause bypass cache invalidation | ❌ Not covered |
+| Tunnel Connection Cache | ENG-592681 (tunnel dropped) | Android tunnel dropped often on WiFi/5G network switch; recovery mechanism bug leaves both tunnels disconnected | ❌ Not covered |
 | Bypass Connection Cache | ENG-624953 (VDI disruption) | Connection caches not session-isolated; tunnel establishment clears bypass entries | ❌ Not covered |
+| Bypass Connection Cache | ENG-652754 (stuck connecting) | Android client stuck in connecting state on unreliable network; bypass decisions stalled | ❌ Not covered |
+| Data Packet Entry | ENG-917549 (stuck connecting) | WiFi-to-mobile-data switch triggers tunnel disconnect; UI not updated with latest tunnel state | ❌ Not covered |
 | bypassAllExistingConns | ENG-710784 (FF not working) | `avoidDisruptingBypass` FF insufficient for Citrix DaaS, needs `bypassAllExistingConnections` | ❌ Not covered |
+| bypassAllExistingConns | ENG-918131 (VDI SWG broken) | Multi-session VDI concurrent logon causes tunnel build delay (~20s); SWG traffic bypassed intermittently | ❌ Not covered |
 | Session ID Caching | ENG-753965 (wrong session ID) | User re-login generates new session ID, old cache entries point to stale session | ❌ Not covered |
 
 ---
@@ -287,6 +314,9 @@ flowchart TD
     HOST -.-> BUG_RACE["🔴 BUG ENG-739968<br/>File race condition<br/>empties exception list"]
     FW -.-> BUG_FW["🔴 BUG ENG-655009<br/>FW exception add/delete<br/>flow issue"]
     CP -.-> BUG_CP["🔴 BUG ENG-482990<br/>Captive portal not detected<br/>meta refresh not supported"]
+
+    LOWER -.-> BUG_DHCP["🔴 BUG ENG-680385<br/>macOS DHCP traffic passed<br/>to NE on network change"]
+    HOST -.-> BUG_DNS_MAP["🔴 BUG ENG-803728<br/>iOS DNS IP mapping change<br/>breaks existing connections"]
 
     style BYPASS_FW fill:#4CAF50,color:#fff
     style BYPASS_HOST fill:#4CAF50,color:#fff
@@ -358,6 +388,9 @@ flowchart TD
 
     BBT -.-> BUG_BBT["🔴 BUG ENG-742949<br/>Bypass by tunnel traffic<br/>still decrypted intermittently"]
 
+    BYPASS_NOTUNN -.-> BUG_NCP["🔴 BUG ENG-496412<br/>iOS NCP app broken<br/>TCP over DNS not supported"]
+    BYPASS -.-> BUG_WFC["🔴 BUG ENG-744457<br/>WFC one-way audio<br/>on Zebra Android phone"]
+
     style BYPASS fill:#4CAF50,color:#fff
     style FINAL_BYPASS fill:#4CAF50,color:#fff
     style BBT fill:#FFA726,color:#fff
@@ -381,6 +414,8 @@ flowchart TD
 | Regex Match | ENG-525399 (ALL traffic bypass) | Native apps + regex on cert-pinned apps causes broad match | ❌ Not covered |
 | API Endpoint | ENG-595031 (wrong API) | Client calls `steering/pinnedapps` instead of `steering/dynamicpinnedapps` with Secure Config + Dynamic Steering | ❌ Not covered |
 | Block Action | ENG-718498 (DNS TCP leak) | DNS TCP traffic from blocked cert-pinned app bypasses block | ❌ Not covered |
+| Block Action (iOS) | ENG-496412 (NCP app broken) | TCP over DNS not supported on iOS; app broken when NSClient enabled | ❌ Not covered |
+| Bypass Action (Android) | ENG-744457 (WFC one-way audio) | Regression from ENG-673392 fix causes one-way audio for WFC app on Zebra phone | ❌ Not covered |
 | Bypass by Tunnel | ENG-742949 (intermittent decrypt) | Traffic marked for bypass-by-tunnel still decrypted intermittently via proxy | ⚠️ Partial — `ssl_pinned_app/test_p0.py` (C1257901, C1257902) |
 | Process Match (Android) | ENG-499052 (Teams not enforced) | Cert-pinned exceptions not enforced at OS level from R112.1 | ❌ Not covered |
 | Process Match (Android) | ENG-707515 (Google workspace) | `com.google.android.gms` in default bypass list causes reverse proxy issue | ❌ Not covered |
@@ -408,6 +443,8 @@ flowchart TD
 
     PKT --> IP_CHECK{Accessed<br/>by IP?}
     IP_CHECK -->|Yes| BUG_IP["🔴 BUG ENG-395253<br/>Category bypass skips<br/>IP addresses entirely"]
+
+    PROBE_SET -.-> BUG_TIMEOUT["🔴 BUG ENG-784777<br/>Linux websites timeout<br/>on first access (probe delay)"]
 
     style BYPASS fill:#4CAF50,color:#fff
 ```
@@ -470,6 +507,7 @@ flowchart LR
 
     RESULT -.-> BUG_ONPREM["🔴 BUG ENG-455132<br/>Off-prem exception<br/>applied to on-prem"]
     RESULT -.-> BUG_FC_ONPREM["🔴 BUG ENG-384041<br/>FailClose mode instead<br/>of Backed Off on-prem"]
+    METHOD -.-> BUG_IPSEC["🔴 BUG ENG-451987<br/>Client Enabled despite<br/>IPSec steering detected"]
 
 ```
 
@@ -477,18 +515,20 @@ flowchart LR
 
 | Flow Step | Known Bugs | Root Cause | Automation |
 |---|---|---|---|
+| Detection Method | ENG-451987 (Enabled despite IPSec) | Client status changed to Enabled even though IPSec steering method was detected; GRE/IPSec bypass not honored | ❌ Not covered |
 | Exception Set Selection | ENG-455132 (wrong set applied) | Off-prem ICMP exception applied while on-prem (before R107) | ⚠️ Partial — `dynamic_steering/test_p0.py` (C1257897, C1257898) |
 | FailClose + On-Prem | ENG-384041 (wrong mode) | Flexible Dynamic Steering not handling on-prem + steering=None | ⚠️ Partial — `nplan_4571/test_nplan_4571_failclose.py` |
 | FailClose + Config Update | ENG-422599 (FC after update) | Dynamic steering change triggers config reload race with FailClose | ⚠️ Partial — `nplan_4571/test_nplan_4571_failclose.py` |
 
 ### 6. Self-Process and Infrastructure Bypass
 
-The client automatically bypasses its own traffic to prevent circular dependency. On Android, a Day-1 bug (ENG-906435) causes the client to steer its own management plane traffic through the tunnel.
+The client automatically bypasses its own traffic to prevent circular dependency. On Android, a Day-1 bug (ENG-906435) causes the client to steer its own management plane traffic through the tunnel. On Linux, a separate issue (ENG-453051) causes the client service to receive SIGTERM, terminating the bypass evaluation entirely and leaving traffic unsteered.
 
 - **Self process ID**: `m_selfProcessId` is set during initialization. All packets from `stAgentSvc` are bypassed.
 - **UI process**: `isUIProcess()` checks if the packet originated from the NSClient UI. On Windows during FailClose, UI process traffic is always bypassed (for captive portal embedded browser).
 - **NPA hosts**: When NPA is enabled, `npaHost`, `npaLBHost`, and `npaTenant` are added to the host exception map.
 - **Registered client apps**: Other Netskope components (e.g., nsauxiliarysvc) can register via `registerBypassClientApp()`.
+- **Linux SIGTERM risk**: **ENG-453051** — Multiple SIGTERM issues on Linux cause the client service to restart, disrupting all bypass decisions during the restart window.
 
 ---
 
@@ -518,6 +558,8 @@ flowchart TD
     CP -.-> BUG_CP_TIMEOUT["🔴 BUG ENG-548975<br/>Grace period reset<br/>after tunnel worker start"]
 
     BLOCK -.-> BUG_REBOOT["🔴 BUG ENG-895081<br/>FC not dropping traffic<br/>after system reboot"]
+    BLOCK -.-> BUG_DISCONNECT["🔴 BUG ENG-928461<br/>Client disconnects and<br/>enters FailClose state"]
+    FC_DOMAIN -.-> BUG_NETCHANGE["🔴 BUG ENG-793442<br/>Blocked sites accessible<br/>after network change (IPv6)"]
 
     style BYPASS_FC fill:#4CAF50,color:#fff
     style BYPASS_PRIV fill:#4CAF50,color:#fff
@@ -617,7 +659,7 @@ sequenceDiagram
 
 ## Windows
 
-**Bug Count**: 17 | **Key Gaps**: VDI bypass isolation, CFW exception handling, session ID caching
+**Bug Count**: 24 | **Key Gaps**: VDI bypass isolation, CFW exception handling, session ID caching, VPN interop, client crash, high CPU
 
 Windows bypass implementation uses the WFP (Windows Filtering Platform) callout driver for packet interception and `nstcpiputil::getAppName()` for process name retrieval via TCP table lookup. Windows has the largest share of bypass bugs due to VDI environments, CFW mode interactions, and complex driver-level vs service-level exception handling.
 
@@ -629,10 +671,17 @@ Windows bypass implementation uses the WFP (Windows Filtering Platform) callout 
 | **UI Process Bypass** | During FailClose, `isUIProcess()` walks parent chain (up to 2 levels) for captive portal browser |
 | **Existing Connections** | `bypassAllExistingConns` and `avoidDisruptingBypass` flags for connections established before client start |
 | **Self-Protection** | `handleExceptionsAtDriver` feature flag controls IPv4/IPv6 exception handling level (ENG-654108) |
+| **VPN Interop** | ENG-805334 — Citrix Secure Access WFP mode + `injectDNSAtNetworkLayer` flag conflicts with Cisco AnyConnect |
+| **High CPU** | ENG-729176 — Massive SMB connections in Web mode cause high CPU on Domain Controller; non-web traffic should not be handled by driver |
+| **Client Stability** | ENG-747635 — Client crash on Windows 10 during rapid connection churn (massive create/delete) |
+| **VDI Multi-Session** | ENG-918131 — Multi-session VDI concurrent logon causes ~20s tunnel build delay; SWG traffic broken intermittently |
+| **FailClose Disconnect** | ENG-928461 — Client disconnects and enters FailClose state for multiple users |
+| **Steering Method** | ENG-451987 — Client status changed to Enabled despite IPSec steering method detection |
+| **Network Change** | ENG-793442 — Blocked websites accessible after network change due to IPv6 processing delay |
 
 ## macOS
 
-**Bug Count**: 4 | **Key Gaps**: Wildcard exception, IPv4-mapped IPv6 handling
+**Bug Count**: 5 | **Key Gaps**: Wildcard exception, IPv4-mapped IPv6 handling, DHCP on network change
 
 macOS bypass uses the Network Extension (NE) with Transparent Proxy and DNS Proxy. Key macOS-specific behaviors include IPv4-mapped IPv6 address conversion, NE flow packet handling, and a special Google Drive SNI workaround.
 
@@ -643,10 +692,11 @@ macOS bypass uses the Network Extension (NE) with Transparent Proxy and DNS Prox
 | **IPv4-Mapped IPv6** | `convertIpv4MappedIpv6toIpv4ForMacForException()` handles `::ffff:10.0.0.1` → `10.0.0.1` conversion |
 | **DNS Proxy** | Exception domains pushed to DNS Proxy via `m_neExceptionDomainList` |
 | **Google Drive Hack** | Special SNI replacement for `.googleusercontent.com` domains |
+| **DHCP Bypass** | ENG-680385 — Apple macOS 15.4/15.5 bug passes DHCP traffic to NE transparentProxy on network change; fix excludes DHCP via excludeRules |
 
 ## Linux
 
-**Bug Count**: 0 direct | **Key Gaps**: Exception route conversion edge cases
+**Bug Count**: 2 | **Key Gaps**: Exception route conversion edge cases, SIGTERM client restart, first-access timeout
 
 Linux bypass uses a TUN/TAP virtual interface (VIF) with iptables rules. IP range exceptions are converted to exclude routes via `getExcludeRoutes()`.
 
@@ -656,13 +706,18 @@ Linux bypass uses a TUN/TAP virtual interface (VIF) with iptables rules. IP rang
 | **Exception Delivery** | IP range exceptions converted to exclude routes via `getExcludeRoutes()` |
 | **Process Detection** | Uses `program_invocation_short_name` for self-process identification |
 
-*No Linux-specific bypass bugs identified in current escalation data. Cross-platform bugs (domain exception, category bypass) apply.*
+### Linux-Specific Bugs
+
+| Bug ID | Problem Summary | Root Cause | Fix |
+|--------|----------------|-----------|-----|
+| **ENG-453051** | Multiple SIGTERM issues crash client service | Client service restart on SIGTERM disrupts all bypass decisions | Fix SIGTERM signal handling |
+| **ENG-784777** | Websites timeout on first access | Category probe delay causes first-time access timeout on Linux; ACK handling with limited port range | Limit port range and verify ACK flow |
 
 ---
 
 ## Android
 
-**Bug Count**: 6 | **Key Gaps**: Cert-pinned enforcement at OS level, default bypass list, self-traffic steering
+**Bug Count**: 12 | **Key Gaps**: Cert-pinned enforcement at OS level, default bypass list, self-traffic steering, QUIC protocol, tunnel stability, NPA restart
 
 Android bypass has unique challenges: per-app VPN exclusion at the OS level, cert-pinned app enforcement differences from R112.1 onward, and a default bypass list that can cause unexpected reverse proxy behavior.
 
@@ -683,10 +738,16 @@ Android bypass has unique challenges: per-app VPN exclusion at the OS level, cer
 | **ENG-454765** | Bypassed traffic not handled properly | No test setup for Android bypass | Add Android bypass test infra |
 | **ENG-707515** | Google workspace forced via reverse proxy | `com.google.android.gms` in default bypass list | Review default bypass list |
 | **ENG-906435** | Client steers own MP traffic | Self-process bypass not working on Android | Fix self-traffic detection |
+| **ENG-402499** | QUIC traffic not steered | QUIC protocol (UDP/443) not supported by proxy; traffic not steered on Android | Drop QUIC packets or add QUIC handling |
+| **ENG-533981** | Tunnel flaps on Android | DNS tunnel health check failures cause tunnel instability and bypass cache invalidation | Add DNS health check test coverage |
+| **ENG-592681** | Tunnel dropped often | Network switch (WiFi/5G) causes tunnel disconnect; recovery mechanism leaves both tunnels down | Re-implement recovery mechanism |
+| **ENG-652754** | Stuck in connecting state | Unreliable network causes client stuck connecting; bypass decisions stalled | Fix tunnel state management |
+| **ENG-744457** | WFC one-way audio on Zebra phone | Regression from ENG-673392 fix breaks cert-pinned bypass for WFC | Improve cert-pinned validation steps |
+| **ENG-917549** | Stuck connecting on network switch | WiFi-to-mobile-data switch triggers tunnel disconnect; UI shows stale CONNECTING state | Update UI with latest tunnel state |
 
 ## iOS
 
-**Bug Count**: 2 | **Key Gaps**: Domain-only cert-pin matching, NPA + private IP conflict
+**Bug Count**: 5 | **Key Gaps**: Domain-only cert-pin matching, NPA + private IP conflict, IPv6 local link DNS, DNS IP mapping race, TCP over DNS
 
 iOS cannot get process information from packets. Cert-pinned app matching is **domain-based only** using `m_bypassAppsDomainsMap`. This fundamentally changes the bypass behavior compared to other platforms.
 
@@ -702,12 +763,15 @@ iOS cannot get process information from packets. Cert-pinned app matching is **d
 |--------|----------------|-----------|-----|
 | **ENG-672788** | Internal website access broken | NPA prevents system-level private IP bypass on iOS | Corner case: NPA + private IP conflict |
 | **ENG-450735** | Internal apps inaccessible after R114 | Regression from ENG-441957 fix affecting steering exceptions | Monthly regression coverage |
+| **ENG-496412** | NCP app broken when client enabled | TCP over DNS not supported on iOS; taken as enhancement | Add TCP over DNS support |
+| **ENG-671659** | IPv6 local link DNS not honored | iOS hotspot DNS with IPv6 local link address not setting scope_id on destination socket | Fix IPv6 link-local scope_id handling |
+| **ENG-803728** | Blank page for microsoftonline.com | Two consecutive DNS queries return different IPs; iOS app updates IP mapping breaking existing connections | Retain existing connection mapping on IP change |
 
 ---
 
 ## ChromeOS
 
-**Bug Count**: 2 | **Key Gaps**: NPA bypass at OS level, large config crash
+**Bug Count**: 3 | **Key Gaps**: NPA bypass at OS level, large config crash, NPA service restart
 
 ChromeOS uses a Chrome extension and shares Android's `bypassIpExceptionAtAndroidOs` feature flag, which can cause all exception IPs to be bypassed at OS level instead of by the NSClient app.
 
@@ -722,6 +786,7 @@ ChromeOS uses a Chrome extension and shares Android's `bypassIpExceptionAtAndroi
 |--------|----------------|-----------|-----|
 | **ENG-637794** | NPA traffic not tunneling | `bypassIpExceptionAtAndroidOs` FF bypasses all exception IPs at OS level | Fix FF scope for NPA traffic |
 | **ENG-872456** | 30K+ domains crash | Large steering config exceeds buffer limit | Add buffer size handling |
+| **ENG-577918** | NPA service not restarted automatically | Client disable/enable to reset tun device disables NPA but fails to re-enable it | Fix NPA service lifecycle on tun reset |
 
 ---
 
@@ -733,14 +798,21 @@ Bypass mechanisms interact with nearly every other NSClient subsystem. The bypas
 
 | Interaction | Known Bugs | Severity | Test Priority |
 |---|---|---|---|
-| Bypass + FailClose | ENG-895081, ENG-384041, ENG-422599, ENG-482990, ENG-548975, ENG-752117 | **S1** | P1 |
-| Bypass + VDI/DaaS | ENG-624953, ENG-710784, ENG-753965 | **S1** | P1 |
+| Bypass + FailClose | ENG-895081, ENG-384041, ENG-422599, ENG-482990, ENG-548975, ENG-752117, ENG-928461, ENG-793442 | **S1** | P1 |
+| Bypass + VDI/DaaS | ENG-624953, ENG-710784, ENG-753965, ENG-918131 | **S1** | P1 |
 | Bypass + CFW Mode | ENG-654108, ENG-655009, ENG-685566, ENG-398387 | **S2** | P1 |
-| Bypass + Dynamic Steering | ENG-455132, ENG-595031, ENG-637794 | **S2** | P2 |
-| Bypass + NPA | ENG-672788, ENG-637794 | **S2** | P2 |
-| Bypass + Cert-Pinned + Tunnel | ENG-742949, ENG-649593 | **S2** | P2 |
+| Bypass + Dynamic Steering | ENG-455132, ENG-595031, ENG-637794, ENG-451987 | **S2** | P2 |
+| Bypass + NPA | ENG-672788, ENG-637794, ENG-577918 | **S2** | P2 |
+| Bypass + Cert-Pinned + Tunnel | ENG-742949, ENG-649593, ENG-496412, ENG-744457 | **S2** | P2 |
 | Bypass + Config Download | ENG-739968 | **S2** | P2 |
 | Bypass + Large Config | ENG-872456 | **S2** | P2 |
+| Bypass + Tunnel Stability (Android) | ENG-533981, ENG-592681, ENG-652754, ENG-917549 | **S2** | P1 |
+| Bypass + QUIC Protocol | ENG-402499 | **S2** | P2 |
+| Bypass + VPN Interop | ENG-805334 | **S2** | P2 |
+| Bypass + Client Stability | ENG-747635, ENG-453051, ENG-729176 | **S2** | P2 |
+| Bypass + IPv6 | ENG-671659, ENG-793442 | **S2** | P2 |
+| Bypass + DNS IP Mapping | ENG-803728 | **S2** | P2 |
+| Bypass + DHCP (macOS) | ENG-680385 | **S3** | P2 |
 
 ## Troubleshooting
 
@@ -784,12 +856,28 @@ Bypass mechanisms interact with nearly every other NSClient subsystem. The bypas
 | Cert-pinned regex scope validation | ENG-525399 | P1 |
 | DNS TCP leak through cert-pinned block | ENG-718498 | P1 |
 | Category bypass with IP access | ENG-395253 | P2 |
-| VDI session isolation for bypass cache | ENG-624953, ENG-710784 | P1 |
+| VDI session isolation for bypass cache | ENG-624953, ENG-710784, ENG-918131 | P1 |
 | nsexception.json race condition | ENG-739968 | P2 |
 | Large domain list (30K+) | ENG-872456 | P2 |
 | Android self-traffic steering | ENG-906435 | P2 |
 | Session ID caching after re-login | ENG-753965 | P2 |
 | BMD / Custom DC bypass actions | — | P2 |
+| QUIC protocol handling (Android) | ENG-402499 | P2 |
+| Android tunnel stability / flaps | ENG-533981, ENG-592681, ENG-652754, ENG-917549 | P1 |
+| WFC cert-pinned bypass on Zebra | ENG-744457 | P2 |
+| Client crash under connection churn | ENG-747635 | P2 |
+| High CPU on Domain Controller | ENG-729176 | P2 |
+| Citrix/Cisco VPN interop at WFP | ENG-805334 | P2 |
+| iOS IPv6 local link DNS | ENG-671659 | P2 |
+| iOS DNS IP mapping race | ENG-803728 | P2 |
+| macOS DHCP on network change | ENG-680385 | P2 |
+| Linux first-access timeout | ENG-784777 | P2 |
+| Linux SIGTERM service restart | ENG-453051 | P2 |
+| Network change bypass enforcement | ENG-793442 | P1 |
+| NPA service restart (Android/ChromeOS) | ENG-577918 | P2 |
+| IPSec steering method bypass | ENG-451987 | P2 |
+| FailClose disconnect state | ENG-928461 | P1 |
+| iOS NCP app TCP over DNS | ENG-496412 | P2 |
 
 ---
 
@@ -843,6 +931,26 @@ Bypass mechanisms interact with nearly every other NSClient subsystem. The bypas
 | **ENG-872456** | 30K+ domains crash Android/ChromeOS | Large steering config exceeds buffer limit during JSON parsing | Add buffer size handling for large configs | Android/ChromeOS |
 | **ENG-895081** | FailClose not dropping traffic after reboot | FailClose not enforced when NSGW unreachable after system reboot | Fix FailClose initialization after reboot | Windows |
 | **ENG-906435** | Android client steers own MP traffic | Self-process bypass not working on Android | Fix self-traffic detection for Android | Android |
+| **ENG-402499** | QUIC traffic not steered on Android | QUIC protocol (UDP/443) not supported by proxy; packets not steered | Drop QUIC packets or add QUIC handling | Android |
+| **ENG-451987** | Client Enabled despite IPSec steering detected | Client status changed to Enabled even though IPSec steering method was detected | Fix GRE/IPSec steering method detection | Windows |
+| **ENG-453051** | Multiple SIGTERM issues crash client service | Client service receives SIGTERM, causing restart and bypass disruption | Fix SIGTERM signal handling and service recovery | Linux |
+| **ENG-496412** | NCP app broken when NSClient enabled | TCP over DNS not supported on iOS; NCP app fails with client enabled | Add TCP over DNS support (enhancement) | iOS |
+| **ENG-533981** | Tunnel flaps on Android | DNS tunnel health check failures cause tunnel instability and bypass cache invalidation | Add DNS health check test for 1hr duration | Android |
+| **ENG-577918** | NPA service not restarted automatically | Client disable/enable to reset tun device disables NPA but fails to re-enable | Fix NPA service lifecycle management on tun reset | Android/ChromeOS |
+| **ENG-592681** | Tunnel dropped often on Android | Network switch (WiFi/5G) causes tunnel disconnect; recovery mechanism bug leaves both tunnels down | Re-implement tunnel recovery mechanism | Android |
+| **ENG-652754** | Android client stuck in connecting state | Unreliable network causes stuck connecting; unable to reproduce consistently | Fix tunnel state management on unreliable networks | Android |
+| **ENG-671659** | iOS not honoring IPv6 local link DNS | DNS UDP bypass not setting IPv6 link-local scope_id on destination socket for hotspot | Fix scope_id handling for IPv6 link-local addresses | iOS |
+| **ENG-680385** | macOS DHCP address not received on network change | Apple macOS 15.4/15.5 bug passes DHCP traffic to NE transparentProxy | Exclude DHCP traffic via excludeRules regardless of steering type | Mac |
+| **ENG-729176** | High CPU on Domain Controller | Massive SMB connections in Web mode handled by driver; non-web traffic should not be processed | Filter non-web traffic from driver processing | Windows |
+| **ENG-744457** | WFC one-way audio on Zebra Android phone | Regression from ENG-673392 fix breaks cert-pinned bypass for WFC app | Improve cert-pinned validation steps in automation | Android |
+| **ENG-747635** | Client crash on Windows 10 | Crash during massive concurrent connection creation/deletion churn | Add stability test for rapid connection churn | Windows |
+| **ENG-784777** | Websites timeout on first access on Linux | Category probe delay and limited port range cause first-time access timeout | Limit port range and verify ACK handling in packet captures | Linux |
+| **ENG-793442** | Blocked websites accessible after network change | Blocked sites accessible when network changed; IPv6 processing delay bypasses enforcement | Fix IPv6 processing delay on network change | Windows |
+| **ENG-803728** | Blank page for microsoftonline.com on iOS | Two consecutive DNS queries return different IPs; IP mapping update breaks existing connections | Retain existing connection mapping when private-to-public IP mapping changes | iOS |
+| **ENG-805334** | Citrix/Cisco VPN interop DNS failure | Citrix Secure Access WFP mode causes DNS transport failure; `injectDNSAtNetworkLayer` flag conflicts with Cisco | Resolve WFP DNS injection conflict between VPN clients | Windows |
+| **ENG-917549** | Android client stuck connecting on network switch | WiFi-to-mobile-data switch triggers tunnel disconnect; tunnel state not updated to UI | Update UI with latest tunnel state after tunnel manager stop | Android |
+| **ENG-918131** | Multi-session VDI SWG tunneling broken | Multiple concurrent VDI logons cause ~20s tunnel build delay; SWG traffic bypassed intermittently | Add VDI multi-session concurrent logon stability test | Windows |
+| **ENG-928461** | Client disconnects and enters FailClose state | Netskope client disconnects and goes to FailClose for multiple users | Fix FailClose state transition on client disconnect | Windows |
 
 ---
 

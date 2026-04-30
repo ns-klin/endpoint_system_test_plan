@@ -1,6 +1,6 @@
 # 13. Certificate Management
 
-**Escalation Bug Count**: 12 (cross-referenced) | **Regression**: 4 (33%) | **Day-1**: 3 (25%) | **Test Gap**: 3 (25%)
+**Escalation Bug Count**: 16 (cross-referenced) | **Regression**: 4 (33%) | **Day-1**: 3 (25%) | **Test Gap**: 3 (25%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=2121756775#gid=2121756775)**
 
@@ -88,6 +88,7 @@ flowchart TD
     READY --> PERIODIC["Periodic Check<br/>Every 300s"]
     PERIODIC -->|CA Changed| ROTATION[CA Rotation Flow]
     PERIODIC -->|No Change| READY
+    PERIODIC -.->|Bug| BUG_499787["🔴 ENG-499787<br/>macOS pop up authentication<br/>dialog in CA rotation"]
 
     ROTATION --> BACKUP[Backup Old Certs]
     BACKUP --> INSTALL_NEW[Install New CA]
@@ -96,6 +97,10 @@ flowchart TD
     MARK_USERS --> REDOWNLOAD[Re-download<br/>All User Certs]
     REDOWNLOAD --> READY
     FALLBACK --> RISK_RACE["🟡 Warning: Multi-user<br/>race condition during<br/>cert rotation"]
+
+    DL_ROOT -.->|MITM risk| BUG_785573["🔴 ENG-785573<br/>PSIRT: Shared trusted root cert<br/>among MPs allows MITM (Win)"]
+    DL_ROOT -.->|MITM risk| BUG_785574["🔴 ENG-785574<br/>PSIRT: Shared trusted root cert<br/>among MPs allows MITM (Mac)"]
+    FF_LINUX -.->|Policy corrupt| BUG_924382["🔴 ENG-924382<br/>Nsclient creates wrong<br/>policy files for Firefox"]
 
     style READY fill:#4CAF50,color:#fff
     style FALLBACK fill:#FF9800,color:#fff
@@ -695,6 +700,10 @@ All certificate-related bugs cross-referenced from escalation bug data across al
 | ENG-742949 | Cert pinned bypass not working | Windows | Steering | Regression from ENG-649593 fix | S2 | Regression |
 | ENG-846555 | Linux auto-upgrade fails with /tmp noexec | Linux | Install | Installer uses /tmp; noexec blocks operations | S2 | Day-1 |
 | ENG-897416 | FedRAMP NSClient connects to commercial domain | All | Steering/PKI | Deprecated sfchecker still sends DNS to commercial domain | S2 | Day-1 |
+| [ENG-499787](https://netskope.atlassian.net/browse/ENG-499787) | macOS nsclient pop up authentication dialog in CA rotation |
+| [ENG-785573](https://netskope.atlassian.net/browse/ENG-785573) | PSIRT: Shared trusted root cert among MPs allows MITM on Netskope tenant user (w |
+| [ENG-785574](https://netskope.atlassian.net/browse/ENG-785574) | PSIRT: Shared trusted root cert among MPs allows MITM on Netskope tenant user (M |
+| [ENG-924382](https://netskope.atlassian.net/browse/ENG-924382) | CLONE - [MAIF] Nsclient create a wrong policy files for Firefox breaking the pol |
 
 ---
 

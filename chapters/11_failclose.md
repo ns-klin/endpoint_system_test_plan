@@ -1,6 +1,6 @@
 # 11. FailClose
 
-**Escalation Bug Count**: 28 | **S1 Critical**: 5 (18%) | **Day-1 Design Debt**: 8 (29%) | **Test Gap**: 10 (36%)
+**Escalation Bug Count**: 29 | **S1 Critical**: 5 (18%) | **Day-1 Design Debt**: 8 (29%) | **Test Gap**: 10 (36%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=2109299317#gid=2109299317)**
 
@@ -77,6 +77,10 @@ stateDiagram-v2
 
     note left of GracePeriod
         🔴 BUG ENG-548975: Grace period<br/>timing issue
+    end note
+
+    note left of Active
+        🔴 BUG ENG-566579: FailClose<br/>NSClient log issue
     end note
 ```
 
@@ -1170,6 +1174,7 @@ sequenceDiagram
 | **ENG-918451** | On-prem detection regression | Android fix (ENG-707767) caused Windows regression; tunnel not reconnecting after location switch | Fix tunnel reconnect logic after on-prem detection | Windows | S2 |
 | **ENG-928461** | Multi-user FC disconnect (SK Finance) | FailClose affects all sessions in multi-user environment | Under investigation | Windows | S2 |
 | **ENG-948106** | Linux crash with large domain config | Domain names 230-255 chars exceeding 35K entries triggers crash; affects FC recovery scenario | Need volume stress test (35K+ long domains) | Linux | S2 |
+| [ENG-566579](https://netskope.atlassian.net/browse/ENG-566579) | [HubSpot][hubspot.goskope.com] Need to fix failclose NSClient log issue |
 
 ---
 

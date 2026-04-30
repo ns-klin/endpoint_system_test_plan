@@ -1,6 +1,6 @@
 # 12. Device Classification
 
-**Escalation Bug Count**: 3 | **Test Gap**: 1 (33%) | **Corner Case**: 1 (33%) | **Day-1**: 1 (33%)
+**Escalation Bug Count**: 16 | **Test Gap**: 1 (33%) | **Corner Case**: 1 (33%) | **Day-1**: 1 (33%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1828506662#gid=1828506662)**
 
@@ -74,6 +74,7 @@ flowchart TD
     POST -->|Success| SAVE[Save Status File<br/>nsdeviceidstatus.json]
 
     SAVE --> PARSE_RESULT[Parse DC Status Response]
+    SAVE -.-> BUG_798635["🔴 ENG-798635<br/>DC status downloaded every second<br/>timing mismatch causes excessive polling"]
     PARSE_RESULT -->|DCv2 size >= 2| MANAGED_CUSTOM[Set Managed +<br/>Custom Label + ID]
     PARSE_RESULT -->|DCv2 size == 1| MANAGED_OR_UNMANAGED[Set Status from<br/>Response String]
     PARSE_RESULT -->|DCv2 empty arrays| UNMANAGED_V2[Set Status: unmanaged]
@@ -86,9 +87,15 @@ flowchart TD
     CACHE_FALLBACK --> END[Done]
     BUG_693785 --> CHANGED
 
+    POST -->|VDI| BUG_501419["🔴 ENG-501419<br/>Custom DC Status not retrieved<br/>on VDI machines"]
+    BUG_501419 --> CACHE_FALLBACK
+
+    PARSE_RESULT -->|Mismatch| BUG_894015["🔴 ENG-894015<br/>Device shows Unmanaged<br/>while NS Client detects Managed"]
+
     CHANGED -->|No| END
     CHANGED -->|Yes| REPORT[Send Device Posture Change Event<br/>via Client Status]
-    REPORT --> WRITE_CACHE[Write DC Cache to nsuser.conf]
+    REPORT --> BUG_392768["🔴 ENG-392768<br/>Device Posture Change event<br/>needs refinement"]
+    BUG_392768 --> WRITE_CACHE[Write DC Cache to nsuser.conf]
     WRITE_CACHE --> NOTIFY[Notify NPA if<br/>unknown to managed]
     NOTIFY --> END
 
@@ -99,6 +106,9 @@ flowchart TD
 | Node | Risk Level | Bug Reference | Description |
 |------|-----------|---------------|-------------|
 | `Parse DC Status Response` | 🔴 High | ENG-693785 | Case-sensitive user/usergroup ID mismatch in backend causes incorrect steering config assignment after DC status change |
+| `POST to MP API` | 🔴 High | ENG-501419 | Custom DC Status not retrieved on VDI machines |
+| `Parse DC Status Response` | 🔴 High | ENG-894015 | Device shows Unmanaged while NS Client detects Managed |
+| `Device Posture Change Event` | 🔴 High | ENG-392768 | Device Posture Change event needs refinement |
 | `MANAGED_CUSTOM` | 🟡 Medium | - | DCv2 custom label parsing failure may silently fall back to legacy status, hiding policy assignment errors |
 | `CACHE_FALLBACK` | 🟡 Medium | - | Network failure during DC POST causes client to reuse stale cached status, masking actual posture changes |
 | `Parse DC Rules File` | 🟡 Low | - | Malformed JSON or encoding issues cause DC to remain "unknown" indefinitely |
@@ -317,6 +327,7 @@ flowchart TD
     CACHE_CHECK -->|No: re-evaluate| GLOBAL["Evaluate All Global Checks"]
 
     GLOBAL --> REG[doRegChecks<br/>Windows only]
+    REG -->|Save fail| BUG_658568["🔴 ENG-658568<br/>DC Rule for Windows<br/>with Registry not saving"]
     GLOBAL --> OS[doOSVersionCheck<br/>Desktop only]
     GLOBAL --> TAG[doDeviceTagCheck]
     GLOBAL --> PROC[doProcChecks]
@@ -331,7 +342,8 @@ flowchart TD
     SKIP_GLOBAL --> CERT
     CACHE_WRITE --> CERT
 
-    CERT["Always: doCertCheck()<br/>(per-session, per-UPN)"] --> SERIALIZE["Serialize Results<br/>+ Metadata (PID, TID, timestamp)"]
+    CERT["Always: doCertCheck()<br/>(per-session, per-UPN)"] --> BUG_425999["🔴 ENG-425999<br/>UPN/Email change not reflected<br/>in DC cert check"]
+    BUG_425999 --> SERIALIZE["Serialize Results<br/>+ Metadata (PID, TID, timestamp)"]
     SERIALIZE --> REPORT["POST to MP"]
 
     style SKIP_GLOBAL fill:#2196F3,color:#fff
@@ -349,6 +361,8 @@ flowchart TD
     PLAT -->|Windows| WSC["Query IWSCProductList<br/>(WSC COM Interface)"]
     WSC --> SVC_CHECK{WSCSVC<br/>Running?}
     SVC_CHECK -->|No| FALLBACK["Use Cached Results"]
+    SVC_CHECK -->|No, 0x80070426| BUG_553715["🔴 ENG-553715<br/>AV Checks Failing<br/>with error code 0x80070426"]
+    BUG_553715 --> FALLBACK
     SVC_CHECK -->|Yes| ENUM["Enumerate AV Products"]
     ENUM --> NAME_MATCH{Name Match?<br/>avName == any<br/>or substring}
     NAME_MATCH -->|No| NEXT_PROD["Next Product"]
@@ -360,6 +374,10 @@ flowchart TD
     SIGN -->|Yes| SIG_CHECK{Signature<br/>Up To Date?}
     SIG_CHECK -->|Yes| PASS
     SIG_CHECK -->|No| FAIL[Return FALSE]
+
+    NAME_MATCH -->|Fail| BUG_824828["🔴 ENG-824828<br/>AV check failing<br/>(product name mismatch)"]
+    BUG_824828 --> FAIL
+    STATE -->|Intermittent| BUG_841829["🔴 ENG-841829<br/>DC rule AV not working<br/>intermittently"]
 
     PLAT -->|macOS| SYSEXT["Run systemextensionsctl list"]
     SYSEXT --> PARSE["Parse Output Lines"]
@@ -415,6 +433,7 @@ flowchart TD
     FIXED --> BL_CHECK{All Fixed Disks<br/>ProtectionStatus == 1?}
     BL_CHECK -->|Yes| PASS[Return TRUE]
     BL_CHECK -->|No| FAIL[Return FALSE]
+    BL_CHECK -->|Intermittent| BUG_649419["🔴 ENG-649419<br/>BitLocker DC rule<br/>not working intermittently"]
 
     PROD -->|PGP/SEE| PGP["Run Symantec CLI<br/>Parse Output"]
     PGP --> PGP_CHECK{Encrypted?}
@@ -473,6 +492,7 @@ flowchart TD
 
     UPN_CHECK -->|Yes| UPN_MATCH{UPN Matches<br/>CN/Email/SAN?}
     UPN_MATCH -->|No| NEXT_CERT
+    UPN_MATCH -->|Fail| BUG_728913["🔴 ENG-728913<br/>Cert Check + UPN<br/>DC failing on macOS"]
     UPN_MATCH -->|Yes| CRL_CHECK
     UPN_CHECK -->|No| CRL_CHECK
 
@@ -485,6 +505,12 @@ flowchart TD
     KEY_CHECK{Check Private Key<br/>Non-Exportable?}
     KEY_CHECK -->|Yes + Exportable| NEXT_CERT
     KEY_CHECK -->|No or Non-Exportable| PASS[Return TRUE]
+
+    START -->|Smart Card| SC_CHECK{Smart Card<br/>PIN Status?}
+    SC_CHECK -->|PIN OK| LOAD
+    SC_CHECK -->|PIN Fail| BUG_606802["🔴 ENG-606802<br/>Smart Card PIN check DC<br/>not working as expected"]
+    BUG_606802 --> FAIL
+    SC_CHECK -->|Continuation| BUG_824383["🔴 ENG-824383<br/>Smart Card PIN check DC<br/>not working (cont. ENG-603548)"]
 
     ENUM -->|No more certs| FAIL[Return FALSE]
 
@@ -781,19 +807,28 @@ grep -i "getResultNE\|getDeviceClassificationNE\|skip.*cache" nsdebuglog.log
 
 ## Windows
 
-**Bug Count**: 1 | **Key Gaps**: Certificate validation logic error, Server SKU AV detection
+**Bug Count**: 10 | **Key Gaps**: Certificate validation, AV detection, BitLocker, Smart Card PIN, Registry rules, VDI DC status
 
-Windows has the most comprehensive DC check support, covering all rule types. The certificate check implementation has a critical logic flaw (ENG-419687) where CA certificates without corresponding client certificates can incorrectly pass validation.
+Windows has the most comprehensive DC check support, covering all rule types. The certificate check implementation has a critical logic flaw (ENG-419687) where CA certificates without corresponding client certificates can incorrectly pass validation. AV detection failures (ENG-553715, ENG-824828, ENG-841829) cluster around WSC service errors and product name matching. Smart Card PIN verification (ENG-606802, ENG-824383) has persistent issues.
 
 ### Windows-Specific Bugs
 
 | Bug ID | Summary | Severity | Root Cause | Gap Type |
 |--------|---------|----------|------------|----------|
 | ENG-419687 | CA cert without client cert incorrectly sets status to Managed | S2 | Certificate validation logic does not exclude CA chain certs when `ignore_cert_chain_certs=false`; X509_verify_cert succeeds on CA cert against itself | Test Gap |
+| ENG-501419 | Custom DC Status not retrieved on VDI machines | S2 | VDI environment DC POST or response handling failure | Test Gap |
+| ENG-553715 | AV Checks Failing with error code 0x80070426 | S2 | WSC service returns ERROR_SERVICE_NOT_ACTIVE on certain configurations | Test Gap |
+| ENG-606802 | Smart Card PIN check DC not working as expected | S2 | Smart card PIN status callback fails to trigger DC re-evaluation | Day-1 |
+| ENG-649419 | BitLocker DC rule not working intermittently | S3 | WMI query for ProtectionStatus returns inconsistent results | Corner Case |
+| ENG-658568 | DC Rule for Windows with Registry not saving | S2 | Backend admin UI rejects registry rule definitions | Day-1 |
+| ENG-798635 | Device classification status download timing issue | S2 | DC status response timing mismatch causes stale status | Test Gap |
+| ENG-824383 | Smart Card PIN check DC not working (continuation of ENG-603548) | S2 | Persistent smart card PIN verification failure across releases | Day-1 |
+| ENG-824828 | AV check failing (product name mismatch) | S2 | AV product name comparison logic mismatch | Test Gap |
+| ENG-841829 | DC rule AV not working intermittently | S2 | AV status detection returns inconsistent results | Corner Case |
 
 ## macOS
 
-**Bug Count**: 1 | **Key Gaps**: System extension AV detection limitations, Big Sur+ NE delegation
+**Bug Count**: 2 | **Key Gaps**: System extension AV detection limitations, Big Sur+ NE delegation, UPN cert check
 
 macOS DC checks use different execution paths based on OS version. Big Sur and above delegate global checks to the Network Extension helper process due to main service sandbox restrictions.
 
@@ -802,6 +837,7 @@ macOS DC checks use different execution paths based on OS version. Big Sur and a
 | Bug ID | Summary | Severity | Root Cause | Gap Type |
 |--------|---------|----------|------------|----------|
 | ENG-419687 | CA cert without client cert incorrectly sets status to Managed | S2 | Same certificate validation logic issue as Windows; affects macOS keychain search | Test Gap |
+| ENG-728913 | Cert Check + UPN Device Classification failing on macOS | S2 | UPN matching logic fails on macOS due to email format mismatch or missing UPN field | Test Gap |
 
 ## Linux
 
@@ -823,16 +859,19 @@ iOS DC support is limited due to platform restrictions. Only basic checks (OS ve
 
 ## Backend
 
-**Bug Count**: 1 | **Key Gaps**: Case-sensitive ID matching, special character handling in rule definitions
+**Bug Count**: 4 | **Key Gaps**: Case-sensitive ID matching, special character handling, UPN sync, status mismatch
 
-The Management Plane backend performs final DC classification decisions and steering config assignment. Two critical bugs affect backend processing.
+The Management Plane backend performs final DC classification decisions and steering config assignment. Multiple bugs affect backend processing.
 
 ### Backend-Specific Bugs
 
 | Bug ID | Summary | Severity | Root Cause | Gap Type |
 |--------|---------|----------|------------|----------|
+| ENG-392768 | Device Posture Change event needs refinement | S2 | Device posture change event payload format causes downstream processing issues | Test Gap |
+| ENG-425999 | UPN/Email change not reflected in DC cert check | S3 | After UPN and email change, client UI shows old UPN; DC cert check uses stale UPN | Corner Case |
 | ENG-693785 | Case-sensitive user/usergroup ID mismatch causes incorrect steering config | S2 | Backend steering config lookup uses case-sensitive comparison; DC status includes mixed-case user IDs | Corner Case |
 | ENG-782593 | DC rule cannot save when AV product name has ™ symbol | S3 | Backend admin UI or API does not properly escape unicode/special characters in rule definitions | Day-1 |
+| ENG-894015 | Device shows Unmanaged while NS Client detects Managed | S2 | Backend DC classification result mismatches client-side detection | Test Gap |
 
 ## Automation Coverage Summary
 
@@ -943,7 +982,10 @@ sequenceDiagram
 | Certificate Check | DC Evaluation | CA cert without client cert incorrectly passes validation | S2 | ENG-419687 |
 | AV Rule Definition | Backend Admin UI | Special characters in AV product name rejected by admin UI | S3 | ENG-782593 |
 | DC Status Change | NPA Access | Delayed NPA notification may keep stale access decisions | S3 | - |
-| WSC Service | AV Check | Server SKU without WSCSVC falls back to stale cached results | S3 | - |
+| WSC Service | AV Check | Server SKU without WSCSVC falls back to stale cached results; 0x80070426 error | S2 | ENG-553715 |
+| Smart Card PIN | Cert Check | Smart Card PIN verification fails to trigger DC re-evaluation | S2 | ENG-606802, ENG-824383 |
+| BitLocker Check | Disk Encryption | BitLocker DC rule returns inconsistent results intermittently | S3 | ENG-649419 |
+| VDI Environment | DC POST | Custom DC Status not retrieved on VDI machines | S2 | ENG-501419 |
 | PostureChecker Cache | DC Re-evaluation | 1-hour global cache masks rapid AV uninstall/reinstall | S4 | - |
 
 ## Appendix A: Bug Quick Reference
@@ -953,6 +995,19 @@ sequenceDiagram
 | ENG-419687 | CA cert without client cert incorrectly sets status to Managed | Windows/macOS | S2 | Certificate validation logic does not exclude CA chain certs when `ignore_cert_chain_certs=false`; X509_verify_cert succeeds on CA cert against itself | Test Gap |
 | ENG-693785 | Case-sensitive user/usergroup ID mismatch causes incorrect steering config | Backend | S2 | Backend steering config lookup uses case-sensitive comparison; DC status includes mixed-case user IDs | Corner Case |
 | ENG-782593 | DC rule cannot save when AV product name has ™ symbol | Backend | S3 | Backend admin UI or API does not properly escape unicode/special characters in rule definitions | Day-1 |
+| [ENG-392768](https://netskope.atlassian.net/browse/ENG-392768) | Refine Device Posture Change event and Customer issue(ENG-489089) |
+| [ENG-425999](https://netskope.atlassian.net/browse/ENG-425999) | UPN and Email change : After changing the UPN and email, client UI shows the old |
+| [ENG-501419](https://netskope.atlassian.net/browse/ENG-501419) | [Embecta] Custom Device Classification Status not retrieved on NS Client - VDI m |
+| [ENG-553715](https://netskope.atlassian.net/browse/ENG-553715) | [ Device Classification ] AV Checks Failing with error code 0x80070426 |
+| [ENG-606802](https://netskope.atlassian.net/browse/ENG-606802) | Smart Card PIN check DC not working as expected |
+| [ENG-649419](https://netskope.atlassian.net/browse/ENG-649419) | Bitlocket DC rule is not working intermittently |
+| [ENG-658568](https://netskope.atlassian.net/browse/ENG-658568) | Crit POV - WebUI - Device Classification Rule for Windows with Registry would no |
+| [ENG-728913](https://netskope.atlassian.net/browse/ENG-728913) | ENG-728913 CLONE - [fortescue] Cert Check + UPN Device Classification failing on |
+| [ENG-798635](https://netskope.atlassian.net/browse/ENG-798635) | [The Chugoku Electric Power Company Inc] Device classification status is downloa |
+| [ENG-824383](https://netskope.atlassian.net/browse/ENG-824383) | Smart Card PIN check DC not working as expected- Continuation of ENG-603548 |
+| [ENG-824828](https://netskope.atlassian.net/browse/ENG-824828) | [Wistron] Device Classification AV check failing |
+| [ENG-841829](https://netskope.atlassian.net/browse/ENG-841829) | [Southcoast Health System] DC rule AV not working |
+| [ENG-894015](https://netskope.atlassian.net/browse/ENG-894015) | CLONE - [Clinisys] BWAN client shows device as Unmanaged, while NS Client detect |
 
 ---
 

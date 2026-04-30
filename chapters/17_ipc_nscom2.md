@@ -1,6 +1,6 @@
 # 17. IPC Communication (NSCom2/NSMsg2)
 
-**Escalation Bug Count**: 5 | **Regression**: 0 (0%) | **Day-1**: 3 (60%) | **Test Gap**: 0 (0%)
+**Escalation Bug Count**: 9 | **Regression**: 0 (0%) | **Day-1**: 3 (60%) | **Test Gap**: 0 (0%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=63239927#gid=63239927)**
 
@@ -52,9 +52,17 @@ graph TB
 
     BUG_DEADLOCK["🔴 BUG ENG-591721<br/>NSCom2 multi-user deadlock<br/>when Session 1 logoff +<br/>Session 2 broadcast collide"]
     BUG_SESSION["🔴 BUG ENG-753965<br/>Incorrect session ID used<br/>for traffic routing"]
+    BUG_VDI_CONN["🔴 BUG ENG-624953<br/>VDI DaaS: must not terminate<br/>existing connections when<br/>new NSClient session starts"]
+    BUG_EMAIL["🔴 BUG ENG-669129<br/>Multi-user: email address<br/>not populated in config popup"]
+    BUG_CA_DL["🔴 BUG ENG-772404<br/>CA cert download fails,<br/>client does not retry"]
+    BUG_PRINT["🔴 BUG ENG-942287<br/>Multi-user: unable to print<br/>documents using different apps"]
 
     SVC --- BUG_DEADLOCK
     SVC --- BUG_SESSION
+    UI2 --- BUG_VDI_CONN
+    UI2 --- BUG_EMAIL
+    UI1 --- BUG_CA_DL
+    UI2 --- BUG_PRINT
 
     style SVC fill:#2196F3,color:#fff
     style UI1 fill:#4CAF50,color:#fff
@@ -749,6 +757,10 @@ All bugs with IPC relevance found in the escalation bug database. Each bug is ve
 | ENG-885394 | NPA re-auth window refreshes unexpectedly during macOS Dark Wake -- repeated NPA_REAUTH_SESSION_REFRESH IPC event firing | macOS | NPA reauth timer fires during Dark Wake; XPC call stalls; window cancelled before user input; cycle repeats | S3 | bugs/tunneling.md #48 |
 | ENG-917549 | Android UI stuck in CONNECTING state after WiFi-to-mobile-data switch -- tunnel state not sent to UI after tunnel manager stopped | Android | Tunnel manager stops before sending final tunnel state update to UI via IPC | S2 | bugs/steering.md #86, bugs/tunneling.md #50 |
 | ENG-918131 | Multi-session VDI SWG traffic broken intermittently -- tunnel building delayed ~20s when multiple users logon simultaneously | Windows | Concurrent multi-user logon causes IPC/tunnel establishment contention, 20s delay | S2 | bugs/steering.md #87, bugs/tunneling.md #51 |
+| [ENG-624953](https://netskope.atlassian.net/browse/ENG-624953) | On VDI DaaS Environment we must not terminate existing connections when NSClient |
+| [ENG-669129](https://netskope.atlassian.net/browse/ENG-669129) | [Petrobras] Netskope is not populating email address on the configuration pop-up |
+| [ENG-772404](https://netskope.atlassian.net/browse/ENG-772404) | If the CA certificate download fails, the client does not retry fetching it. Ins |
+| [ENG-942287](https://netskope.atlassian.net/browse/ENG-942287) | [IAG] - Some users are unable to print documents using different applications li |
 
 ---
 

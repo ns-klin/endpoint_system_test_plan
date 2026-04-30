@@ -5,3 +5,5 @@ html_output/
 mermaid_images/
 tc_export/
 *.pyc
+.env
+*.xlsx

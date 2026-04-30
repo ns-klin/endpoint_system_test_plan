@@ -4,7 +4,7 @@ Bugs related to traffic steering, bypass rules, exceptions, domain matching, DNS
 
 > Source: Escalation Bug Review spreadsheet, filtered by keywords: steering, bypass, exception, traffic, cloud firewall, DNS security, SSL, filter, IPv6, split tunnel.
 
-**Total: 103 bugs**
+**Total: 110 bugs**
 
 ---
 
@@ -2938,3 +2938,145 @@ Next steps:
 
 ---
 
+
+
+## --- Added from Excel (not previously in bugs/) ---
+
+## 104. ENG-394366
+
+**Jira**: [ENG-394366](https://netskope.atlassian.net/browse/ENG-394366)
+
+**Description**: [Reybanpac] Android devices with NSClient are unable to login to MS Teams due of Reverse Proxy
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Android |
+| Feature | Client-Reverse proxy |
+| Regression | Yes |
+| Bug Type | Missing in Regression |
+| Automatable | No |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - Regression(Issue not seen in R108 and noticied with R112)  and it breaks reverse Proxy
+- need to setup ADFS - Reverse proxy integration test for Monthly Regression.
+- https://netskope.testrail.io/index.php?/cases/view/1792510&group_by=cases:section_id&group_id=124890&group_order=asc&display_deleted_cases=0
+- Integration test
+
+---
+## 105. ENG-430841
+
+**Jira**: [ENG-430841](https://netskope.atlassian.net/browse/ENG-430841)
+
+**Description**: i18n issue with user alert justification hint
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | i18N |
+| Regression | Day-1 |
+| Bug Type | Test Gap(Need to improve Localization language support) |
+| Automatable | No |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - From the bug history it appears to be there from Day-1
+- Need to move this ticket in Customer found defects or i18N test rail folder.
+- Test Gap scope: Day-1 Issue
+
+---
+## 106. ENG-487256
+
+**Jira**: [ENG-487256](https://netskope.atlassian.net/browse/ENG-487256)
+
+**Description**: [Fannie Mae] Users reporting slowness/upload failures with Workday/Microsoft Teams chat on R117
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | Proxy |
+| Regression | Yes |
+| Bug Type | Missing in Regression |
+| Automatable | No |
+| Interop | Yes |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - (Was broken due to another fix ENG-390309)
+- Make sure to add  it in Monthly or Golden release regression.
+- Interop Scope: Proxy - squid
+
+---
+## 107. ENG-505439
+
+**Jira**: [ENG-505439](https://netskope.atlassian.net/browse/ENG-505439)
+
+**Description**: EPoC where EP is Netskope EP 163.116.128.80 (Port 80)
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | Proxy |
+| Regression | No |
+| Bug Type | Corner case. (Added FF ignoreInactiveSystemProxy) |
+| Automatable | No |
+| Interop | Yes |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - Need to add test case
+- new FF - ignoreInactiveSystemProxy
+- Interop Scope: Proxy - squid
+
+---
+## 108. ENG-596840
+
+**Jira**: [ENG-596840](https://netskope.atlassian.net/browse/ENG-596840)
+
+**Description**: Inconsistent Client Configuration Display for Nested AD Groups on Netskope Tenant UI
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Web UI |
+| Feature | NSC-FT-ClientConfiguration |
+| Source Sheet | Q226 Feb |
+
+---
+## 109. ENG-664964
+
+**Jira**: [ENG-664964](https://netskope.atlassian.net/browse/ENG-664964)
+
+**Description**: [Emirates National Oil Company] client config failed to download due to 405 error
+
+| Field | Value |
+|-------|-------|
+| OS Platform | NSC-SVC-Addonman (Backend) |
+| Feature | NSC-FT-CLientConfiguration |
+| Regression | No |
+| Bug Type | Corner case |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: When there is a new FF request initiated and the backed is already processing the POST /client/config might end up crfeating the stale entry.
+- Need to add test case to cover this scenario.
+- Bug in Open state as on Jun 1st. But issue already identified and addressed in ENG-661846
+
+---
+## 110. ENG-795746
+
+**Jira**: [ENG-795746](https://netskope.atlassian.net/browse/ENG-795746)
+
+**Description**: [Tier 1/Stellantis]100+ Clients Unable to Update Configuration After Enabling Secure Configuration Service
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | NSC-FT-ClientConfiguration |
+| Regression | Day-1 |
+| Bug Type | Corner Case |
+| Automatable | yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: This is a corner case where NSconfig.Json is corrupted for some unknown reason and QE is not able to replicate this issue. the fix is addressing issues where certificates were not decrypting or being removed, with ongoing work to resolve PKI parsing errors
+
+---

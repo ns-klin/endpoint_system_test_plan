@@ -1,6 +1,6 @@
 # 03. Service Lifecycle
 
-**Escalation Bug Count**: 4 | **Regression**: 2 (50%) | **Test Gap**: 1 (25%) | **Day-1**: 1 (25%)
+**Escalation Bug Count**: 22 | **Regression**: 2 (9%) | **Test Gap**: 10 (45%) | **Day-1**: 5 (23%) | **Corner Case**: 5 (23%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1947711884#gid=1947711884)**
 
@@ -270,6 +270,15 @@ flowchart TD
     LIN_LOGON --> LIN_BLOCK["g_theSignalHandler.waitShutdown()<br/>Blocks until SIGTERM"]
     LIN_BLOCK --> LIN_STOP["onStop()<br/>config.delSession(0)"]
 
+    BUG_635063["🔴 ENG-635063<br/>Linux client crashing often"]
+    LIN_BLOCK -.->|Bug| BUG_635063
+
+    BUG_679477["🔴 ENG-679477<br/>Intermittent segfault<br/>use-after-free in callback"]
+    LIN_BLOCK -.->|Bug| BUG_679477
+
+    BUG_948106["🔴 ENG-948106<br/>Linux crash with<br/>large domain config (30K+)"]
+    LIN_LOGON -.->|Bug| BUG_948106
+
     style RUN fill:#4CAF50,color:#fff
     style PLAT fill:#2196F3,color:#fff
     style WIN_LOOP fill:#E3F2FD,color:#333
@@ -287,6 +296,9 @@ flowchart TD
 | `RUN` (🔴 ENG-601667) | Service dependency missing or failed causes service startup failure | S1 — Complete outage, service does not start | Event log: "dependency service or group failed to start" |
 | `WIN_LOOP` | Event loop timeout not handled correctly in main service (only monitor service should timeout) | S3 — Service exits unexpectedly | Log: "exitOnTimeout called in non-monitor service" |
 | `WIN_LOGON` | Repeated logon events without logoff may leak session resources | S4 — Memory leak over time | Monitor session count growth in multi-session VDI |
+| `LIN_BLOCK` (🔴 ENG-635063) | Linux client crashing often during steady-state operation | S2 — Repeated service crashes, user unprotected | Crash dumps in Linux; systemd restart logs; `journalctl -u stagentd` |
+| `LIN_BLOCK` (🔴 ENG-679477) | Intermittent segmentation fault due to use-after-free in socket callback | S2 — Random crash, hard to reproduce | Core dumps with `tie socket` stack trace; segfault in syslog |
+| `LIN_LOGON` (🔴 ENG-948106) | Linux crash when loading large domain steering config (30K+ domains) | S2 — Service crash on config load, client non-functional | Crash on startup with large steering config; OOM or segfault in logs |
 
 ### onLogon — Module Initialization
 
@@ -464,6 +476,10 @@ sequenceDiagram
         Note over SVC: 🔴 ENG-593503<br/>DEM thread stack overrun crash<br/>Occurs during service shutdown
     end
 
+    rect rgb(255, 235, 235)
+        Note over SVC: 🔴 ENG-538602<br/>Client crash while stopping services<br/>Race condition during service teardown
+    end
+
     SVC->>SVC: resetDebugSessions (60s timeout)
     SVC->>SVC: m_bIsInitialized = false
     Note over SVC: "Service stopped"
@@ -475,6 +491,7 @@ sequenceDiagram
 |------|------|--------|-----------|
 | `TUN → SSL cleanup` (🔴 ENG-587497) | Null pointer dereference during `nsssl::cleanup_all()` | S2 — Service crash on stop, incomplete cleanup | Crash dumps with stack trace in SSL module |
 | `DEM stop` (🔴 ENG-593503) | DEM thread stack overrun during shutdown | S2 — Service crash, potential memory corruption | Crash dumps showing DEM thread stack overflow |
+| `SVC cleanup` (🔴 ENG-538602) | Client crash while stopping services due to race condition during teardown | S2 — Service crash on stop, incomplete cleanup | Crash dumps during service stop; logs show crash in stop sequence |
 | `NET stop` | NetworkMonitor fires change event after stop() begins | S3 — Reconnect race during shutdown | Log "reconnect" entries after "Service is stopping" |
 | `COM stop` | NSCom2 client command arrives during shutdown | S3 — Blocked shutdown, timeout | `nsCom2Server.stop()` hangs for 30+ seconds |
 
@@ -658,7 +675,38 @@ stateDiagram-v2
         ENG-726784 — AOAC device UID
         regeneration breaks reconnect
     end note
+
+    note left of AOACSuspend
+        🔴 ENG-561138 — AOAC cached status sequence issue
+        🔴 ENG-561570 — Service not restartable in Modern Standby
+    end note
+
+    note right of TunnelRestart
+        🔴 ENG-434212 — Disabled due to error after connected standby
+        🔴 ENG-726488 — User justification popups missing (AOAC)
+        🔴 ENG-726602 — Disabled due to error on wake from sleep
+        🔴 ENG-754190 — Client disconnects frequently after AOAC wake
+        🔴 ENG-766069 — Client disconnects (write pkt thread error)
+        🔴 ENG-783149 — Client disconnects (null pointer on wake)
+        🔴 ENG-830275 — Client disconnects after AOAC wakeup
+    end note
+
+    note left of Running
+        🔴 ENG-746099 — Client disconnects frequently (Win/Mac AOAC)
+    end note
 ```
+
+#### Node Risk Assessment: Windows Power Events (AOAC)
+
+| Node | Risk | Impact | Detection |
+|------|------|--------|-----------|
+| `AOACSuspend` (🔴 ENG-561138) | AOAC cached status sequence issue causes incorrect state after suspend | S3 — Client shows stale status, potential security gap | Log: "AOAC cached status" mismatch after display-off |
+| `AOACSuspend` (🔴 ENG-561570) | Service cannot be restarted while in Modern Standby mode | S2 — Service unrecoverable until full wake | Log: "service restart failed" during Modern Standby |
+| `TunnelRestart` (🔴 ENG-434212) | Client stays "Disabled due to error" after connected standby wake | S2 — Client non-functional, user unprotected | UI status: "Disabled due to error" after wake |
+| `TunnelRestart` (🔴 ENG-726488) | User justification popups not shown after AOAC wake | S3 — Policy bypass, user not prompted | Log: no justification popup triggered post-wake |
+| `TunnelRestart` (🔴 ENG-726602) | Client disabled due to error on wake from sleep/modern standby | S2 — Client non-functional after wake | UI status: "Disabled due to error" after sleep/wake |
+| `TunnelRestart` (🔴 ENG-754190, ENG-766069, ENG-783149, ENG-830275) | Service crash after AOAC wake causes frequent disconnects for multiple users | S2 — Repeated disconnects, user disruption | Crash dumps after wake; tunnel status cycling connected/disconnected |
+| `Running` (🔴 ENG-746099) | Client disconnects frequently on Windows and Mac AOAC devices | S2 — Widespread user disruption across platforms | Multiple users reporting frequent disconnects on AOAC-enabled devices |
 
 ### macOS Sleep/Wake
 
@@ -689,6 +737,9 @@ flowchart TD
     style TUN_CHK fill:#2196F3,color:#fff
     style AOAC_CHK fill:#2196F3,color:#fff
     style RECONNECT_CHK fill:#2196F3,color:#fff
+
+    BUG_746099["🔴 ENG-746099<br/>Client disconnects frequently<br/>on Win/Mac AOAC devices"]
+    RECONNECT -.->|Bug| BUG_746099
 ```
 
 ### Scheduled Tasks
@@ -841,6 +892,7 @@ Key differences:
 - `OnStartStopUser()` is called from the Java layer via JNI
 - DNS health check with failure recovery (max 3 consecutive failures trigger reconnect)
 - Save battery mode support via `setSaveBatteryMode()`
+- Known battery drain issue (🔴 ENG-559121) — service causes excessive battery consumption; battery performance test coverage needed
 
 ### iOS
 
@@ -854,7 +906,7 @@ iOS uses the `NEPacketTunnelProvider` framework. The service lifecycle is manage
 
 ### ChromeOS
 
-ChromeOS uses a Chrome Extension with a service worker. The lifecycle is managed by Chrome's extension framework rather than OS-level service management. The client-side complexity is significantly lower than desktop platforms.
+ChromeOS uses a Chrome Extension with a service worker. The lifecycle is managed by Chrome's extension framework rather than OS-level service management. The client-side complexity is significantly lower than desktop platforms. However, two confirmed crash bugs exist: the client freezes on ChromeOS 138 due to missing x86_64 native support (🔴 ENG-857166), and the client crashes during enrollment when the tenant has over 30,000 domains in steering config (🔴 ENG-872456).
 
 ---
 
@@ -867,7 +919,7 @@ ChromeOS uses a Chrome Extension with a service worker. The lifecycle is managed
 | **Crash recovery** | stWatchdog service | launchd KeepAlive | systemd Restart=always | App-managed | iOS-managed |
 | **Main loop** | WaitForMultipleObjects | CFRunLoopRun | signal wait | Returns immediately | iOS framework |
 | **Session handling** | Multi-session (VDI) | Single/multi user | Single user | Single user | Single user |
-| **Power events** | AOAC + PBT_* | CPowerMonitor | N/A | Doze mode | iOS background |
+| **Power events** | AOAC + PBT_* (10 bugs) | CPowerMonitor (1 bug) | N/A | Doze mode | iOS background |
 | **IPC mechanism** | NSCom2 (named pipe) | NSCom2 (Unix socket) | NSCom2 (Unix socket) | JNI | UserDefaults |
 | **Self-protection** | SCM + driver | SIP + launchd | N/A | N/A | N/A |
 | **Upgrade monitor** | stWatchdog/stAgentSvcMon | launchd | systemd | App store | App store |
@@ -965,9 +1017,9 @@ grep -i "Service is stopping\|module stopped\|resetDebugSessions" nsdebuglog.log
 
 ## Windows
 
-**Bug Count**: 3 | **Key Gaps**: Service dependency failures, shutdown crash handling
+**Bug Count**: 14 | **Key Gaps**: AOAC sleep/wake recovery, shutdown crash handling, service dependency failures
 
-The Windows platform has the most complex service lifecycle due to multi-session support (VDI), watchdog service integration, self-protection mechanisms, and AOAC power management. The majority of service lifecycle bugs occur on Windows.
+The Windows platform has the most complex service lifecycle due to multi-session support (VDI), watchdog service integration, self-protection mechanisms, and AOAC power management. The majority of service lifecycle bugs occur on Windows, with a strong cluster around AOAC (Always On, Always Connected) sleep/wake transitions.
 
 ### Windows Confirmed Bug Mapping
 
@@ -976,6 +1028,17 @@ The Windows platform has the most complex service lifecycle due to multi-session
 | ENG-601667 | Service dependency failure | Dependency service or group failed to start, blocking stAgentSvc startup | S1 | Regression |
 | ENG-587497 | Service crash during tunnel disconnect | Null pointer dereference in `nsssl::cleanup_all()` during shutdown | S2 | Test Gap |
 | ENG-593503 | DEM thread stack overrun crash | Stack overflow in DEM module during service shutdown | S2 | Day-1 |
+| ENG-434212 | Client "Disabled due to error" after connected standby | Client fails to recover status after AOAC wake from sleep | S2 | Test Gap |
+| ENG-538602 | Client crash while stopping services | Race condition during service teardown causes crash | S2 | Test Gap |
+| ENG-561138 | AOAC cached status sequence issue | Cached status sequence incorrect after AOAC suspend/resume | S3 | Corner Case |
+| ENG-561570 | Service not restartable in Modern Standby | NSC service cannot be restarted while device is in Modern Standby mode | S2 | Corner Case |
+| ENG-726488 | User justification popups not showing (AOAC) | Popups fail to appear after AOAC wake; requires `enable_aoac_by_prelogon` flag | S3 | Test Gap |
+| ENG-726602 | Client disabled due to error on sleep/wake | Client enters error state when waking from sleep/modern standby | S2 | Test Gap |
+| ENG-746099 | Client disconnects frequently (Win/Mac AOAC) | AOAC tunnel keep-alive fails, causing frequent disconnects for multiple users | S2 | Day-1 |
+| ENG-754190 | Client disconnects frequently (AOAC wake crash) | Service crash after AOAC power up/wake from standby | S2 | Test Gap |
+| ENG-766069 | Client disconnects (write pkt thread error) | Null pointer in write packet thread after AOAC wake | S2 | Day-1 |
+| ENG-783149 | Client disconnects (null pointer on wake) | Null pointer dereference after AOAC wake, limited AOAC test scope | S2 | Day-1 |
+| ENG-830275 | Client disconnects after AOAC wakeup | AOAC wakeup recovery failure causes repeated disconnects | S2 | Test Gap |
 
 ### Windows Test Cases
 
@@ -988,14 +1051,27 @@ The Windows platform has the most complex service lifecycle due to multi-session
 | TC-03-W05 | **Shutdown Order Verification**: Stop service with tunnel connected and FailClose enabled, verify log order: Config → Scheduler → NetworkMonitor → DEM → NSCom2 → Tunnel → FailClose | S3 | P2 | Test Gap |
 | TC-03-W06 | **AOAC Power Event Handling**: On AOAC device, trigger display-off/display-on, verify tunnel behavior matches `AOACSupportEnabled` config (keep-alive vs disconnect/reconnect) | S3 | P2 | Corner Case |
 | TC-03-W07 | **Upgrade Monitor Retry Limit**: Set `UpgradeInProgress` flag, stop service, verify `ThreadUpgradeMonitor` retries MSI launch up to 3 times then stops (related to MSI pile-up bug) | S3 | P2 | Corner Case |
+| TC-03-W08 | **AOAC Wake Status Recovery**: On AOAC device, put to connected standby, wake, verify client does NOT stay in "Disabled due to error" status (ENG-434212, ENG-726602) | S2 | P1 | Test Gap |
+| TC-03-W09 | **AOAC Cached Status Sequence**: On AOAC device with CrowdStrike AV, trigger AOAC suspend/resume cycles, verify cached status updates in correct sequence (ENG-561138) | S3 | P2 | Corner Case |
+| TC-03-W10 | **Modern Standby Service Restart**: On AOAC device in Modern Standby, attempt service restart via watchdog, verify service restarts successfully (ENG-561570) | S2 | P1 | Corner Case |
+| TC-03-W11 | **AOAC Wake Justification Popups**: On AOAC device with user justification policy, sleep and wake, verify justification popups appear correctly; test with `enable_aoac_by_prelogon` flag (ENG-726488) | S3 | P2 | Test Gap |
+| TC-03-W12 | **AOAC Frequent Disconnect Regression**: On AOAC device, perform 10+ sleep/wake cycles, verify client maintains stable connection without frequent disconnects (ENG-754190, ENG-766069, ENG-783149, ENG-830275) | S2 | P1 | Test Gap |
+| TC-03-W13 | **AOAC Cross-Platform Disconnect**: On both Windows and macOS AOAC devices, verify `enableMacOsAOACSupport` flag keeps tunnel alive during wake callback (ENG-746099) | S2 | P1 | Day-1 |
+| TC-03-W14 | **Service Stop Crash**: Stop service while tunnel is actively transmitting traffic, verify no crash during service teardown (ENG-538602) | S2 | P1 | Test Gap |
 
 ---
 
 ## macOS
 
-**Bug Count**: 0 | **Key Gaps**: Sleep/wake tunnel recovery, launchd crash handling
+**Bug Count**: 1 | **Key Gaps**: Sleep/wake tunnel recovery, AOAC frequent disconnects, launchd crash handling
 
-macOS uses a simpler service lifecycle managed by launchd. The `KeepAlive` property provides automatic crash recovery. No confirmed escalation bugs have been mapped to macOS service lifecycle.
+macOS uses a simpler service lifecycle managed by launchd. The `KeepAlive` property provides automatic crash recovery. One confirmed escalation bug affects macOS in the AOAC sleep/wake path.
+
+### macOS Confirmed Bug Mapping
+
+| Bug ID | Summary | Root Cause | Severity | Gap Type |
+|--------|---------|------------|----------|----------|
+| ENG-746099 | Client disconnects frequently (Win/Mac AOAC) | AOAC tunnel keep-alive fails during `onSystemWakeup()` callback, causing frequent disconnects | S2 | Day-1 |
 
 ### macOS Test Cases
 
@@ -1004,20 +1080,24 @@ macOS uses a simpler service lifecycle managed by launchd. The `KeepAlive` prope
 | TC-03-M01 | **Sleep/Wake Tunnel Recovery**: With tunnel connected and AOAC disabled, sleep Mac, wake, verify tunnel reconnects; repeat with AOAC enabled, verify tunnel stays connected | S3 | P2 | Test Gap |
 | TC-03-M02 | **launchd Crash Recovery**: Kill `stAgentSvc` process, verify launchd restarts it automatically, check system.log for restart entry | S3 | P2 | Test Gap |
 | TC-03-M03 | **SIGTERM Graceful Shutdown**: Send SIGTERM to service, verify `CFRunLoopStop()` triggers `onStop()`, verify all modules clean up without crash | S3 | P2 | Test Gap |
+| TC-03-M04 | **AOAC Frequent Disconnect**: With `enableMacOsAOACSupport` flag, perform repeated sleep/wake cycles, verify client does not disconnect frequently (ENG-746099) | S2 | P1 | Day-1 |
 
 ---
 
 ## Linux
 
-**Bug Count**: 1 | **Key Gaps**: systemd restart recovery, SIGTERM handling
+**Bug Count**: 4 | **Key Gaps**: Service crashes (segfault, use-after-free), large config handling, SIGTERM handling
 
-Linux uses systemd for service lifecycle. The `Restart=always` policy provides automatic crash recovery. One confirmed bug relates to SIGTERM signal handling.
+Linux uses systemd for service lifecycle. The `Restart=always` policy provides automatic crash recovery. Four confirmed bugs affect Linux service lifecycle: one SIGTERM cleanup issue and three crash-related bugs.
 
 ### Linux Confirmed Bug Mapping
 
 | Bug ID | Summary | Root Cause | Severity | Gap Type |
 |--------|---------|------------|----------|----------|
 | ENG-453051 | SIGTERM multiple issues | Signal handler not properly cleaning up resources before exit | S3 | Regression |
+| ENG-635063 | Linux client crashing often | Frequent service crashes during runtime operation | S2 | Test Gap |
+| ENG-679477 | Intermittent segmentation fault (R117/R122) | Use-after-free: tie socket instance freed before callback finishes | S2 | Corner Case |
+| ENG-948106 | Linux crash with large domain config | Crash when loading steering config with 30K+ long domains (230-255 chars) | S2 | Corner Case |
 
 ### Linux Test Cases
 
@@ -1026,14 +1106,23 @@ Linux uses systemd for service lifecycle. The `Restart=always` policy provides a
 | TC-03-L01 | **SIGTERM Graceful Shutdown**: Send SIGTERM to service, verify signal handler triggers `onStop()`, verify all resources cleaned up (ENG-453051 regression check) | S3 | P1 | Regression |
 | TC-03-L02 | **systemd Restart Recovery**: Kill `stAgentSvc` process with `kill -9`, verify systemd restarts service within 15 seconds (RestartSec=10 + buffer), verify tunnel reconnects | S3 | P2 | Test Gap |
 | TC-03-L03 | **Shutdown Order Verification**: Stop service with tunnel connected, verify log order matches expected sequence, verify no reconnect attempts during shutdown | S3 | P2 | Test Gap |
+| TC-03-L04 | **Linux Service Stability**: Run service under normal load for extended period (24+ hours), verify no crashes or segfaults in syslog/journalctl (ENG-635063) | S2 | P1 | Test Gap |
+| TC-03-L05 | **Use-After-Free Segfault**: Perform rapid tunnel connect/disconnect cycles while socket callbacks are active, verify no segmentation faults from freed socket instances (ENG-679477) | S2 | P2 | Corner Case |
+| TC-03-L06 | **Large Domain Config Crash**: Configure steering with 30K+ domains (230-255 chars each), start service, verify no crash during config load and steering initialization (ENG-948106) | S2 | P1 | Corner Case |
 
 ---
 
 ## Android
 
-**Bug Count**: 0 | **Key Gaps**: JNI lifecycle transitions, save battery mode
+**Bug Count**: 1 | **Key Gaps**: Battery drain, JNI lifecycle transitions, save battery mode
 
-Android has a simplified lifecycle driven by the app layer via JNI. No confirmed escalation bugs have been mapped to Android service lifecycle.
+Android has a simplified lifecycle driven by the app layer via JNI. One confirmed escalation bug relates to battery drain caused by the service.
+
+### Android Confirmed Bug Mapping
+
+| Bug ID | Summary | Root Cause | Severity | Gap Type |
+|--------|---------|------------|----------|----------|
+| ENG-559121 | Android battery drain issue | Service causes excessive battery consumption; missing battery performance test coverage | S3 | Test Gap |
 
 ### Android Test Cases
 
@@ -1042,14 +1131,22 @@ Android has a simplified lifecycle driven by the app layer via JNI. No confirmed
 | TC-03-A01 | **JNI Lifecycle Transitions**: Start/stop service via `OnStartStopUser()` JNI call multiple times, verify clean init and cleanup without leaks | S4 | P3 | Test Gap |
 | TC-03-A02 | **Save Battery Mode**: Enable save battery mode, verify service reduces background activity, disable and verify normal operation resumes | S4 | P3 | Test Gap |
 | TC-03-A03 | **DNS Health Check Failure Recovery**: Trigger 3 consecutive DNS health check failures, verify service triggers reconnect, verify max 3 failures honored | S4 | P3 | Corner Case |
+| TC-03-A04 | **Battery Drain Monitoring**: Run service for extended period (8+ hours), monitor battery consumption, verify drain is within acceptable thresholds during idle and active tunneling (ENG-559121) | S3 | P2 | Test Gap |
 
 ---
 
 ## iOS / ChromeOS
 
-**Bug Count**: 0 | **Key Gaps**: Network Extension lifecycle, Chrome Extension service worker
+**Bug Count**: 2 (ChromeOS) | **Key Gaps**: ChromeOS platform compatibility, large config handling, Network Extension lifecycle
 
-iOS and ChromeOS have framework-managed lifecycles with minimal service-layer complexity. No confirmed escalation bugs.
+iOS has a framework-managed lifecycle with minimal service-layer complexity and no confirmed bugs. ChromeOS has two confirmed crash bugs related to platform compatibility and large config handling.
+
+### ChromeOS Confirmed Bug Mapping
+
+| Bug ID | Summary | Root Cause | Severity | Gap Type |
+|--------|---------|------------|----------|----------|
+| ENG-857166 | Client v133 freezing on ChromeOS 138 | App crashes on ChromeOS 138 due to missing x86_64 native support | S2 | Day-1 |
+| ENG-872456 | Client crashes on enrollment (30K+ domains) | Client crashes when enrolling to tenant with over 30,000 domains in steering config | S2 | Corner Case |
 
 ### iOS / ChromeOS Test Cases
 
@@ -1057,6 +1154,8 @@ iOS and ChromeOS have framework-managed lifecycles with minimal service-layer co
 |----|-----------|----------|---------------|----------|
 | TC-03-I01 | **NEPacketTunnelProvider Lifecycle**: Start/stop tunnel provider, verify iOS manages lifecycle correctly, verify tunnel state transitions | S4 | P3 | Test Gap |
 | TC-03-C01 | **Chrome Extension Service Worker**: Start/stop Chrome extension, verify service worker lifecycle, verify communication with background page | S4 | P3 | Test Gap |
+| TC-03-C02 | **ChromeOS Platform Compatibility**: Install client on ChromeOS 138+, verify no freezing or crash due to architecture mismatch (ENG-857166) | S2 | P1 | Day-1 |
+| TC-03-C03 | **ChromeOS Large Domain Enrollment**: Enroll ChromeOS client to tenant with 30K+ domains in steering config, verify no crash during enrollment (ENG-872456) | S2 | P1 | Corner Case |
 
 ---
 
@@ -1081,16 +1180,24 @@ iOS and ChromeOS have framework-managed lifecycles with minimal service-layer co
 | SIGTERM cleanup | None | 0 | ❌ None | ENG-453051 not covered |
 | Shutdown SSL crash | None | 0 | ❌ None | ENG-587497 not covered |
 | DEM shutdown crash | None | 0 | ❌ None | ENG-593503 not covered |
+| Service stop crash | None | 0 | ❌ None | ENG-538602 not covered |
 | Shutdown order | None | 0 | ❌ None | TC-03-X02 not covered |
-| Sleep/wake recovery | None | 0 | ❌ None | TC-03-M01 not covered |
+| AOAC sleep/wake | None | 0 | ❌ None | ENG-434212, ENG-561138, ENG-561570, ENG-726488, ENG-726602, ENG-746099, ENG-754190, ENG-766069, ENG-783149, ENG-830275 not covered |
+| Linux crash stability | None | 0 | ❌ None | ENG-635063, ENG-679477, ENG-948106 not covered |
+| Android battery drain | None | 0 | ❌ None | ENG-559121 not covered |
+| ChromeOS compatibility | None | 0 | ❌ None | ENG-857166, ENG-872456 not covered |
 
 ### Coverage Gaps
 
 | Gap | Impact | Priority | Recommendation |
 |-----|--------|----------|----------------|
+| **AOAC sleep/wake recovery (10 bugs)** | Largest bug cluster — AOAC wake failures cause "Disabled due to error", frequent disconnects, service crashes | P1 | Add AOAC-specific test suite with automated sleep/wake cycles on AOAC hardware; cover ENG-434212, ENG-726602, ENG-754190 cluster |
 | **Service dependency failure (ENG-601667)** | Regression risk for service startup | P1 | Add `nplan_service_lifecycle/test_dependency_failure.py` to disable dependencies and verify startup failure |
-| **Shutdown crash (ENG-587497, ENG-593503)** | Test gap for SSL cleanup, Day-1 risk for DEM | P1 | Add crash dump monitoring to existing stop tests |
+| **Shutdown crash (ENG-587497, ENG-593503, ENG-538602)** | Test gap for SSL cleanup, service stop crash, Day-1 risk for DEM | P1 | Add crash dump monitoring to existing stop tests |
+| **Linux crash stability (ENG-635063, ENG-679477, ENG-948106)** | Use-after-free segfaults and large config crashes on Linux | P1 | Add Linux stability tests: long-duration run, rapid connect/disconnect, large domain config |
 | **Linux SIGTERM handling (ENG-453051)** | Regression risk for resource cleanup | P1 | Add Linux-specific signal test with resource leak detection |
+| **ChromeOS compatibility (ENG-857166, ENG-872456)** | Platform crash on newer ChromeOS versions and large tenant configs | P1 | Add ChromeOS platform matrix test and large-config enrollment test |
+| **Android battery drain (ENG-559121)** | Battery performance gap | P2 | Add battery monitoring test for golden release validation |
 | **Shutdown order verification** | Cross-flow reconnect race risk | P2 | Add log sequence validation to existing stop tests |
 | **Sleep/wake tunnel recovery** | macOS-specific gap | P2 | Add macOS-specific test with pmset sleep/wake triggers |
 
@@ -1175,25 +1282,46 @@ When the service stops, FailClose should transition to "service down" state rath
 
 | Bug ID | Summary | Platform | Root Cause | Severity | Gap Type |
 |--------|---------|----------|------------|----------|----------|
-| ENG-601667 | Service dependency failure | Windows | Dependency service or group failed to start, blocking stAgentSvc startup | S1 | Regression |
+| ENG-434212 | Client "Disabled due to error" after connected standby | Windows | Client fails to recover status after AOAC wake from sleep | S2 | Test Gap |
+| ENG-446703 | MSI pile-up: hung MSI + retry = zombie processes | Windows | Upgrade monitor retries MSI while previous hung instance still running | S2 | Corner Case |
 | ENG-453051 | SIGTERM multiple issues | Linux | Signal handler not properly cleaning up resources before exit | S3 | Regression |
+| ENG-538602 | Client crash while stopping services | Windows | Race condition during service teardown causes crash | S2 | Test Gap |
+| ENG-559121 | Android battery drain issue | Android | Service causes excessive battery consumption | S3 | Test Gap |
+| ENG-561138 | AOAC cached status sequence issue | Windows | Cached status sequence incorrect after AOAC suspend/resume | S3 | Corner Case |
+| ENG-561570 | Service not restartable in Modern Standby | Windows | NSC service cannot restart while device is in Modern Standby mode | S2 | Corner Case |
 | ENG-587497 | Service crash during tunnel disconnect | Windows | Null pointer dereference in `nsssl::cleanup_all()` during shutdown | S2 | Test Gap |
 | ENG-593503 | DEM thread stack overrun crash | Windows | Stack overflow in DEM module during service shutdown | S2 | Day-1 |
+| ENG-601667 | Service dependency failure | Windows | Dependency service or group failed to start, blocking stAgentSvc startup | S1 | Regression |
+| ENG-635063 | Linux client crashing often | Linux | Frequent service crashes during runtime operation | S2 | Test Gap |
+| ENG-679477 | Intermittent segmentation fault (R117/R122) | Linux | Use-after-free: tie socket instance freed before callback finishes | S2 | Corner Case |
+| ENG-726488 | User justification popups not showing (AOAC) | Windows | Popups fail after AOAC wake; requires `enable_aoac_by_prelogon` flag | S3 | Test Gap |
+| ENG-726602 | Client disabled due to error on sleep/wake | Windows | Client enters error state when waking from sleep/modern standby | S2 | Test Gap |
+| ENG-746099 | Client disconnects frequently (Win/Mac AOAC) | Windows, macOS | AOAC tunnel keep-alive fails during wake callback | S2 | Day-1 |
+| ENG-754190 | Client disconnects frequently (AOAC wake crash) | Windows | Service crash after AOAC power up/wake from standby | S2 | Test Gap |
+| ENG-766069 | Client disconnects (write pkt thread error) | Windows | Null pointer in write packet thread after AOAC wake | S2 | Day-1 |
+| ENG-783149 | Client disconnects (null pointer on wake) | Windows | Null pointer dereference after AOAC wake | S2 | Day-1 |
+| ENG-830275 | Client disconnects after AOAC wakeup | Windows | AOAC wakeup recovery failure causes repeated disconnects | S2 | Test Gap |
+| ENG-857166 | Client v133 freezing on ChromeOS 138 | ChromeOS | App crashes on ChromeOS 138 due to missing x86_64 native support | S2 | Day-1 |
+| ENG-872456 | Client crashes on enrollment (30K+ domains) | ChromeOS | Crash when enrolling to tenant with over 30,000 domains | S2 | Corner Case |
+| ENG-948106 | Linux crash with large domain config | Linux | Crash when loading steering config with 30K+ long domains (230-255 chars) | S2 | Corner Case |
 
-**Bug Distribution**:
-- Windows: 3 bugs (75%)
-- Linux: 1 bug (25%)
-- macOS/Android/iOS/ChromeOS: 0 bugs
+**Bug Distribution** (22 total):
+- Windows: 14 bugs (64%) — dominated by AOAC sleep/wake issues
+- Linux: 4 bugs (18%) — crash and stability issues
+- ChromeOS: 2 bugs (9%) — platform compatibility and large config
+- macOS: 1 bug (5%) — AOAC (shared with Windows via ENG-746099)
+- Android: 1 bug (5%) — battery drain
 
 **Severity Distribution**:
-- S1: 1 bug (25%) — Critical, service fails to start
-- S2: 2 bugs (50%) — High severity, service crash or functional failure
-- S3: 1 bug (25%) — Medium severity, cleanup issue
+- S1: 1 bug (5%) — Critical, service fails to start
+- S2: 18 bugs (82%) — High severity, service crash or functional failure
+- S3: 3 bugs (14%) — Medium severity, degraded functionality
 
 **Gap Type Distribution**:
-- Regression: 2 bugs (50%) — Previously fixed, reintroduced
-- Test Gap: 1 bug (25%) — Never tested
-- Day-1: 1 bug (25%) — New feature, first release
+- Test Gap: 10 bugs (45%) — Never tested, mostly AOAC scenarios
+- Corner Case: 5 bugs (23%) — Rare but high-impact scenarios
+- Day-1: 5 bugs (23%) — New feature issues
+- Regression: 2 bugs (9%) — Previously fixed, reintroduced
 
 ---
 
@@ -1249,4 +1377,4 @@ For mermaid diagram nodes annotated with bugs or risks:
 
 ---
 
-**Chapter Summary**: The `stAgentSvc` service lifecycle follows a staged initialization pattern: constructor wiring → platform OnInit → config.init → onLogon (module creation) → config download → onConfigReady (tunnel start). Shutdown reverses this order, carefully stopping network-event-producing modules before tearing down tunnels. Windows uses an event-driven main loop with SCM integration and a separate watchdog service for crash recovery. macOS relies on launchd `KeepAlive` and `CFRunLoopRun`. Linux uses systemd `Restart=always` and signal-based blocking. The most common lifecycle bugs involve race conditions during startup (session vs config init), shutdown ordering (reconnect during teardown), and state management during power transitions (AOAC sleep/wake).
+**Chapter Summary**: The `stAgentSvc` service lifecycle follows a staged initialization pattern: constructor wiring → platform OnInit → config.init → onLogon (module creation) → config download → onConfigReady (tunnel start). Shutdown reverses this order, carefully stopping network-event-producing modules before tearing down tunnels. Windows uses an event-driven main loop with SCM integration and a separate watchdog service for crash recovery. macOS relies on launchd `KeepAlive` and `CFRunLoopRun`. Linux uses systemd `Restart=always` and signal-based blocking. The largest bug cluster (10 of 22 bugs) involves AOAC sleep/wake transitions on Windows, causing "Disabled due to error" states, frequent disconnects, and service crashes after wake. Linux has a secondary crash cluster (3 bugs) around use-after-free and large domain configs. ChromeOS and Android each contribute platform-specific lifecycle issues (compatibility crashes, battery drain).

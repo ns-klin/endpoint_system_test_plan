@@ -1,6 +1,6 @@
 # 18. Security Mechanisms
 
-**Escalation Bug Count**: 9 | **Day-1**: 4 (44%) | **Test Gap**: 3 (33%) | **Regression**: 1 (11%) | **Corner Case**: 2 (22%)
+**Escalation Bug Count**: 11 | **Day-1**: 4 (44%) | **Test Gap**: 3 (33%) | **Regression**: 1 (11%) | **Corner Case**: 2 (22%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1855178218#gid=1855178218)**
 
@@ -79,7 +79,10 @@ graph TB
     W_SCM -.-> BUG_733657["🔴 BUG ENG-733657<br/>disableWinStopServiceProtection required post-R125"]
     W_PROC -.-> BUG_925885["🔴 BUG ENG-925885<br/>PSIRT: IOCTL anti-tamper bypass"]
     W_FILE -.-> BUG_718773["🔴 BUG ENG-718773<br/>Protected folder access via Save Logs dialog"]
+    W_FILE -.-> BUG_842447["🔴 BUG ENG-842447<br/>NSC crashing deleting user cert<br/>and SE tokens (config encryption)"]
+    W_FILE -.-> BUG_873979["🔴 BUG ENG-873979<br/>NSClient disabled on machines<br/>including config encryption issue"]
     M_PERM -.-> BUG_690881["🔴 BUG ENG-690881<br/>macOS admin can uninstall with password protection"]
+    SP -.-> BUG_619728["🔴 BUG ENG-619728<br/>Open Redirect leading to<br/>Man-in-the-Middle Attack"]
 ```
 
 ### Self-Protection Node Risk Assessment
@@ -1012,6 +1015,8 @@ sequenceDiagram
 | **ENG-733657** | disableWinStopServiceProtection required post-R125 | Self-protection + FailClose + upgrade compound failure | Windows | Test Gap |
 | **ENG-925885** | PSIRT: Anti-tamper IOCTL bypass in driver | Unauthorized IOCTL to stadrv disables protection | Windows | Day-1 |
 | **ENG-925887** | PSIRT: Client disable via IOCTL bypass | Driver IOCTL vulnerability | Windows | Day-1 |
+| [ENG-842447](https://netskope.atlassian.net/browse/ENG-842447) | [Bharat Heavy] NSC crashing deleting user cert and SE tokens. |
+| [ENG-873979](https://netskope.atlassian.net/browse/ENG-873979) | [NPP][Corebridge Financial (SAFG)] NSClient is disabled on multiple machines inc |
 
 ---
 

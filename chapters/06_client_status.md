@@ -1,10 +1,10 @@
 # 06. Client Status Reporting
 
-**Escalation Bug Count**: 8 | **Regression**: 4 (50%) | **Day-1**: 2 (25%) | **Test Gap**: 4 (50%)
+**Escalation Bug Count**: 20 | **Regression**: 6 | **Day-1**: 3 | **Test Gap**: 6 | **Corner Case**: 5
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1851702887#gid=1851702887)**
 
-> This chapter covers how NSClient reports device status, events, and heartbeats to the Management Plane. It traces the complete data flow from event triggers through message preparation, caching, and delivery to both the Legacy Pipeline (addonman API) and the DEM Pipeline (Global Event Forwarder). All 8 escalation bugs are mapped to specific failure points in the status reporting flow, with mermaid diagrams annotated at each known breakage.
+> This chapter covers how NSClient reports device status, events, and heartbeats to the Management Plane. It traces the complete data flow from event triggers through message preparation, caching, and delivery to both the Legacy Pipeline (addonman API) and the DEM Pipeline (Global Event Forwarder). All 20 escalation bugs are mapped to specific failure points in the status reporting flow, with mermaid diagrams annotated at each known breakage.
 
 ---
 
@@ -14,7 +14,7 @@ The admin console needs real-time visibility into every managed device: is the t
 
 The highest risk area is the **dual-pipeline transition** between Legacy (addonman) and DEM (GEF): when one pipeline is disabled but the other is not fully operational, devices disappear from the admin console (ENG-420917, ENG-420918). The second major risk is **DEM data integrity**: the `client_install_time` field corruption (ENG-429954) and tenant ID reset (ENG-637576) both caused customer-visible data loss in the DEM pipeline. The third gap is **event generation completeness**: tunnel down events were silently dropped for certain disconnect scenarios (ENG-528750), and uninstall status was not posted when `clientEncryptBranding` was enabled (ENG-671884).
 
-Four of the eight bugs (50%) are regressions, meaning they were introduced by changes to existing working code. This is a significantly higher regression rate than the overall project average (26%), indicating that the status reporting module is fragile and under-tested during feature development.
+Beyond the original 8 bugs, 12 additional escalation bugs span device visibility (ENG-418774, ENG-428536), backend status sync (ENG-684014, ENG-769147), client notification delivery (ENG-469289, ENG-781045), host info reporting (ENG-564408, ENG-651043), client UI state (ENG-654877, ENG-733735), config name matching (ENG-686265), and Device Classification event handling (ENG-392768). Of the full 20 bugs, 6 are regressions, indicating that the status reporting module is fragile and under-tested during feature development.
 
 ### Design Decision: Dual-Pipeline Architecture
 
@@ -34,7 +34,7 @@ When the MP or GEF is unreachable, events are cached to a local `eventscache.jso
 
 ## Dual-Pipeline Architecture (All Platforms)
 
-The following diagram shows the end-to-end status reporting architecture, annotated with all 8 confirmed escalation bugs at their respective failure points. The dual-pipeline design means that every status event must successfully traverse at least one pipeline for the device to remain visible in the admin console.
+The following diagram shows the end-to-end status reporting architecture, annotated with all 20 confirmed escalation bugs at their respective failure points. The dual-pipeline design means that every status event must successfully traverse at least one pipeline for the device to remain visible in the admin console.
 
 ```mermaid
 flowchart TD
@@ -100,6 +100,18 @@ flowchart TD
     BUG_601667["🔴 BUG ENG-601667<br/>Wrong version in status<br/>after rollback"]
     BUG_534944["🔴 BUG ENG-534944<br/>Monitored users not showing<br/>in DEM dashboard"]
     BUG_671884["🔴 BUG ENG-671884<br/>Mac uninstall status<br/>not posted to backend"]
+    BUG_392768["🔴 BUG ENG-392768<br/>Device Posture Change event<br/>not refined - DC status"]
+    BUG_418774["🔴 BUG ENG-418774<br/>Device not visible on<br/>Devices Page - Win and Mac"]
+    BUG_428536["🔴 BUG ENG-428536<br/>Devices missing from Tenant<br/>nsdeviceuid mismatch"]
+    BUG_469289["🔴 BUG ENG-469289<br/>No notification popup<br/>longpoll connection absent"]
+    BUG_564408["🔴 BUG ENG-564408<br/>MAC address not displayed<br/>for some Mac machines"]
+    BUG_651043["🔴 BUG ENG-651043<br/>ChromeOS MAC and Serial<br/>not captured by client"]
+    BUG_654877["🔴 BUG ENG-654877<br/>Mac client UI compatibility<br/>issues on macOS"]
+    BUG_684014["🔴 BUG ENG-684014<br/>Client status not following<br/>IDP user status"]
+    BUG_686265["🔴 BUG ENG-686265<br/>Cannot find matched client<br/>config - name spacing issue"]
+    BUG_733735["🔴 BUG ENG-733735<br/>Android Enable button greyed<br/>out after user disable"]
+    BUG_769147["🔴 BUG ENG-769147<br/>Admin disable clients<br/>not downloaded by client"]
+    BUG_781045["🔴 BUG ENG-781045<br/>Notification HTML % encoding<br/>duplicates characters"]
 
     DEVICES -.-> BUG_420917
     DEVICES -.-> BUG_420918
@@ -109,6 +121,18 @@ flowchart TD
     T6 -.-> BUG_601667
     GEFBE -.-> BUG_534944
     T6 -.-> BUG_671884
+    T4 -.-> BUG_392768
+    DEVICES -.-> BUG_418774
+    DEVICES -.-> BUG_428536
+    T8 -.-> BUG_469289
+    PREPDEM -.-> BUG_564408
+    PREPDEM -.-> BUG_651043
+    T8 -.-> BUG_654877
+    MP -.-> BUG_684014
+    POST -.-> BUG_686265
+    T8 -.-> BUG_733735
+    MP -.-> BUG_769147
+    T8 -.-> BUG_781045
 
     RISK_PIPELINE["🟡 Warning: Pipeline flag mismatch<br/>Legacy disabled before DEM ready"]
     RISK_CACHE["🟡 Warning: Event cache overflow<br/>Critical events evicted under FIFO"]
@@ -124,14 +148,17 @@ flowchart TD
 | Node | Risk | Assessment |
 |------|------|------------|
 | Tunnel Connect/Disconnect trigger | 🔴 High | **ENG-528750** -- tunnel down events silently dropped for certain disconnect scenarios |
+| Device Classification Change trigger | 🔴 High | **ENG-392768** -- Device Posture Change event not refined; DC status reporting regression |
 | Install/Upgrade/Uninstall trigger | 🔴 High | **ENG-601667** -- wrong version reported after rollback; **ENG-671884** -- Mac uninstall status not posted |
+| Admin Enable/Disable trigger | 🔴 High | **ENG-469289** -- no notification popup when longpoll absent; **ENG-733735** -- Android Enable button greyed out; **ENG-781045** -- notification HTML encoding duplicates characters; **ENG-654877** -- Mac client UI compatibility issues |
 | prepareMessage | 🟡 Medium | Event string derivation depends on tunnel state machine; edge cases exist |
-| prepareMessageForDem | 🔴 High | **ENG-429954** -- client_install_time corruption; **ENG-637576** -- tenant ID reset to 0 |
-| postClientStatus via addonman API | 🟡 Medium | Pipeline flag mismatch risk when `disableLegacyClientStatus` is set |
+| prepareMessageForDem | 🔴 High | **ENG-429954** -- client_install_time corruption; **ENG-637576** -- tenant ID reset to 0; **ENG-564408** -- MAC address not sent for some Mac machines; **ENG-651043** -- ChromeOS MAC/Serial not captured |
+| postClientStatus via addonman API | 🔴 High | **ENG-686265** -- config name spacing mismatch causes "Cannot find matched client configuration" error; pipeline flag mismatch risk when `disableLegacyClientStatus` is set |
 | CeventCache | 🟡 Medium | FIFO eviction can drop critical FailClose events during prolonged outage |
 | CDemMgr::updateClientStatus | 🟡 Medium | Depends on valid client certificate for mTLS auth |
 | nsDemClientStatusTask | 🔴 High | **ENG-534944** -- users not showing in DEM dashboard after upgrade miss |
-| Admin Console Devices Page | 🔴 High | **ENG-420917**, **ENG-420918** -- devices missing after backend migration |
+| Management Plane (addonman) | 🔴 High | **ENG-684014** -- client status not following IDP user status; **ENG-769147** -- admin disable not downloaded by client |
+| Admin Console Devices Page | 🔴 High | **ENG-420917**, **ENG-420918** -- devices missing after backend migration; **ENG-418774** -- device not visible on Devices Page (Win/Mac); **ENG-428536** -- devices missing from tenant due to nsdeviceuid mismatch |
 | GEF Backend | 🟡 Medium | Predicted: payload validation failures when tenant ID is corrupted |
 
 ---
@@ -173,9 +200,13 @@ flowchart TD
 
     BUG_528750_2["🔴 BUG ENG-528750<br/>Tunnel down event not generated<br/>for specific disconnect case"]
     BUG_601667_2["🔴 BUG ENG-601667<br/>Wrong client version<br/>in rollback event"]
+    BUG_469289_2["🔴 BUG ENG-469289<br/>No notification popup<br/>longpoll connection absent"]
+    BUG_781045_2["🔴 BUG ENG-781045<br/>Notification HTML % encoding<br/>duplicates characters"]
 
     TE2 -.-> BUG_528750_2
     IE5 -.-> BUG_601667_2
+    TE4 -.-> BUG_469289_2
+    SEND_LEGACY -.-> BUG_781045_2
 
     style DROP fill:#999,color:#fff
     style DONE fill:#4CAF50,color:#fff
@@ -273,7 +304,7 @@ flowchart TD
     CHK_INSTALL -->|Missing after upgrade| BUG_INSTALL["🔴 BUG ENG-429954<br/>client_install_time changes<br/>on config rotation"]
     CHK_INSTALL -->|Present| BUILD[Build DEM JSON payload]
 
-    BUILD --> ADD_HOST[Add host_info:<br/>hostname, os, device_make,<br/>serial_number, nsdeviceuid]
+    BUILD --> ADD_HOST[Add host_info:<br/>hostname, os, device_make,<br/>serial_number, mac_address, nsdeviceuid]
     ADD_HOST --> ADD_USER[Add user_info:<br/>userkey, username,<br/>orgkey, DC status]
     ADD_USER --> ADD_EVENT[Add last_seen_device_event:<br/>status, npa_status,<br/>event, actor, timestamp]
     ADD_EVENT --> ADD_META[Add _gef_meta:<br/>timestamp, tenant_id,<br/>home_pop, service_id]
@@ -288,6 +319,14 @@ flowchart TD
     CHK_UPGRADE -->|Yes, missing appinstalltimestamp| BUG_534944["🔴 BUG ENG-534944<br/>Monitored users not showing<br/>after upgrade from old version"]
     CHK_UPGRADE -->|No| SUCCESS
 
+    BUG_564408_DEM["🔴 BUG ENG-564408<br/>MAC address not displayed<br/>for some Mac machines"]
+    BUG_651043_DEM["🔴 BUG ENG-651043<br/>ChromeOS MAC and Serial<br/>not captured by client"]
+    BUG_392768_DEM["🔴 BUG ENG-392768<br/>Device Posture Change event<br/>not refined - DC status"]
+
+    ADD_HOST -.-> BUG_564408_DEM
+    ADD_HOST -.-> BUG_651043_DEM
+    ADD_USER -.-> BUG_392768_DEM
+
     style SUCCESS fill:#4CAF50,color:#fff
 ```
 
@@ -298,6 +337,8 @@ flowchart TD
 | getTenantId from config | 🔴 High | **ENG-637576** -- Token rotation corrupts tenant ID to "0" |
 | Get client_install_time | 🔴 High | **ENG-429954** -- Timestamp changes on config rotation |
 | Build DEM JSON payload | 🟡 Medium | Predicted: field type mismatch between string/numeric enums |
+| Add host_info (mac_address, serial_number) | 🔴 High | **ENG-564408** -- MAC address not sent for some Mac machines; **ENG-651043** -- ChromeOS MAC and Serial not captured (Day-1) |
+| Add user_info (DC status) | 🔴 High | **ENG-392768** -- Device Posture Change event not refined; DC status reported incorrectly |
 | callClientStatusCallback | 🟡 Medium | Depends on valid client cert and user session |
 | CDemMgr processes message | 🔴 High | **ENG-534944** -- Missing appinstalltimestamp after upgrade |
 | GEF reachable check | 🟡 Medium | mTLS auth failure if client cert is expired |
@@ -420,6 +461,7 @@ flowchart TD
 
     EVT_ROLLBACK -.-> BUG_601667_3["🔴 BUG ENG-601667<br/>Wrong version reported<br/>after rollback failure"]
     EVT_UNINST -.-> BUG_671884["🔴 BUG ENG-671884<br/>Mac uninstall status not posted<br/>when clientEncryptBranding=1"]
+    EVT_UPGRADE -.-> BUG_654877_3["🔴 BUG ENG-654877<br/>Mac client UI compatibility<br/>issues after upgrade"]
 
     RISK_OFFLINE["🟡 Warning: Uninstall event<br/>cached but never drained<br/>if service already stopped"]
 
@@ -433,9 +475,9 @@ flowchart TD
 
 ## Windows
 
-**Bug Count**: 5 | **Key Gaps**: Tunnel down event generation, DEM data integrity, rollback version reporting
+**Bug Count**: 11 | **Key Gaps**: Tunnel down event generation, DEM data integrity, rollback version reporting, device visibility, notifications, config name matching
 
-Windows has the most status reporting bugs due to its complex power management (AOAC/Modern Standby), multi-user VDI scenarios, and the WFP driver interaction during tunnel state changes. The `client_install_time` and `nsdeviceuid` fields have both caused device duplication and data inconsistency on Windows.
+Windows has the most status reporting bugs due to its complex power management (AOAC/Modern Standby), multi-user VDI scenarios, and the WFP driver interaction during tunnel state changes. The `client_install_time` and `nsdeviceuid` fields have both caused device duplication and data inconsistency on Windows. Additional Windows-specific issues include Device Posture Change event handling (ENG-392768), device visibility on the admin Devices page (ENG-418774, ENG-428536), notification delivery failures due to absent longpoll connections (ENG-469289) and HTML encoding issues (ENG-781045), and config name spacing mismatches causing "Cannot find matched client configuration" errors (ENG-686265).
 
 ### Windows-Specific: Power Event Handling
 
@@ -447,26 +489,35 @@ The `STATUS_SYSTEMPOWER_UP` event uses `GetTickCount64()` to calculate when the 
 
 | Bug ID | Summary | Root Cause | Flow Point | Severity |
 |--------|---------|------------|------------|----------|
+| [ENG-392768](https://netskope.atlassian.net/browse/ENG-392768) | Device Posture Change event not refined | DC status event not properly generated; monthly regression missed | Device Classification Change trigger | S3 |
+| [ENG-418774](https://netskope.atlassian.net/browse/ENG-418774) | Device not visible on Devices Page | Backend device status sync failure | Admin Console Devices Page | S2 |
 | [ENG-420917](https://netskope.atlassian.net/browse/ENG-420917) | Devices missing from admin UI | Backend migration + device status sync failure | Admin Console Devices Page | S2 |
 | [ENG-420918](https://netskope.atlassian.net/browse/ENG-420918) | Device not visible on Devices Page | Backend migration + device status sync failure | Admin Console Devices Page | S2 |
+| [ENG-428536](https://netskope.atlassian.net/browse/ENG-428536) | Devices missing from Tenant | nsdeviceuid / old_nsdeviceuid mismatch causes device entry loss | Admin Console Devices Page | S2 |
 | [ENG-429954](https://netskope.atlassian.net/browse/ENG-429954) | client_install_time changes unexpectedly | Config rotation overwrites appinstalltimestamp | prepareMessageForDem | S3 |
+| [ENG-469289](https://netskope.atlassian.net/browse/ENG-469289) | No notification popup due to absent longpoll | Longpoll connection not triggered; user receives no alert/block notifications | Admin Enable/Disable trigger | S2 |
 | [ENG-528750](https://netskope.atlassian.net/browse/ENG-528750) | Tunnel down events not generated | Day-1: certain disconnect paths skip sendClientStatus | sendClientStatus trigger | S2 |
 | [ENG-601667](https://netskope.atlassian.net/browse/ENG-601667) | Wrong version after rollback | Rollback writes wrong version to status payload | handleInstallStatus | S3 |
 | [ENG-637576](https://netskope.atlassian.net/browse/ENG-637576) | DEM tenant ID reset to 0 | Token rotation during config update corrupts tenant ID | prepareMessageForDem | S2 |
+| [ENG-686265](https://netskope.atlassian.net/browse/ENG-686265) | "Cannot find matched client configuration" | Missing space in config name causes API mismatch post R127 | postClientStatus via addonman API | S3 |
+| [ENG-781045](https://netskope.atlassian.net/browse/ENG-781045) | Notification HTML % encoding duplicates characters | HTML percent encoding issue in notification templates | Client Notification delivery | S3 |
 
 ## macOS
 
-**Bug Count**: 3 (2 shared with Windows + 1 macOS-only) | **Key Gaps**: Uninstall status posting, DEM user visibility
+**Bug Count**: 7 (2 shared with Windows + 5 macOS-specific) | **Key Gaps**: Uninstall status posting, DEM user visibility, MAC address reporting, client UI compatibility
 
-macOS shares the dual-pipeline architecture with Windows but has a unique failure point in the uninstall flow: when `clientEncryptBranding` is enabled, the uninstall status POST fails because the InstallerUtil needs to decrypt the branding file before it can post the uninstall event, but the decryption happens too late in the uninstall sequence.
+macOS shares the dual-pipeline architecture with Windows but has a unique failure point in the uninstall flow: when `clientEncryptBranding` is enabled, the uninstall status POST fails because the InstallerUtil needs to decrypt the branding file before it can post the uninstall event, but the decryption happens too late in the uninstall sequence. Additional macOS issues include MAC address not being reported for some machines (ENG-564408), client UI compatibility issues introduced by recent Mac UI changes (ENG-654877), and device visibility on the admin Devices page (ENG-418774).
 
 ### macOS Bug Mapping
 
 | Bug ID | Summary | Root Cause | Flow Point | Severity |
 |--------|---------|------------|------------|----------|
+| [ENG-418774](https://netskope.atlassian.net/browse/ENG-418774) | Device not visible on Devices Page | Backend device status sync failure | Admin Console Devices Page | S2 |
 | [ENG-420917](https://netskope.atlassian.net/browse/ENG-420917) | Devices missing from admin UI | Backend migration issue | Admin Console | S2 |
 | [ENG-420918](https://netskope.atlassian.net/browse/ENG-420918) | Device not visible on Devices Page | Backend migration issue | Admin Console | S2 |
 | [ENG-534944](https://netskope.atlassian.net/browse/ENG-534944) | Monitored users not showing in DEM | Missing appinstalltimestamp after upgrade from < R120 | prepareMessageForDem | S2 |
+| [ENG-564408](https://netskope.atlassian.net/browse/ENG-564408) | MAC address not displayed for some machines | Client fails to send MAC address in status payload | prepareMessageForDem / host_info | S3 |
+| [ENG-654877](https://netskope.atlassian.net/browse/ENG-654877) | Client UI compatibility issues on macOS | Recent Mac UI changes introduced compatibility issues | Client UI / Admin Enable/Disable | S3 |
 | [ENG-671884](https://netskope.atlassian.net/browse/ENG-671884) | Mac uninstall status not posted | clientEncryptBranding=1 breaks uninstall POST sequence | handleInstallStatus | S3 |
 
 ## Linux
@@ -477,9 +528,16 @@ Linux has partial DEM support -- client status and heartbeat work, but device he
 
 ## Android
 
-**Bug Count**: 0 direct | **Key Gaps**: Cached event version filter, battery-aware heartbeat
+**Bug Count**: 2 | **Key Gaps**: ChromeOS MAC/Serial capture, Enable button state, cached event version filter
 
-Android has a unique cached event version filter that silently discards events from client versions older than 47 during queue drain. This prevents posting incompatible status messages after an upgrade from a very old version.
+Android has a unique cached event version filter that silently discards events from client versions older than 47 during queue drain. This prevents posting incompatible status messages after an upgrade from a very old version. Two escalation bugs affect Android: ENG-651043 where ChromeOS (which shares the Android codebase) does not capture MAC address and Serial number in the status payload, and ENG-733735 where the Enable button becomes greyed out after user disable because the steering mode check does not account for NPA-only configurations.
+
+### Android Bug Mapping
+
+| Bug ID | Summary | Root Cause | Flow Point | Severity |
+|--------|---------|------------|------------|----------|
+| [ENG-651043](https://netskope.atlassian.net/browse/ENG-651043) | ChromeOS MAC and Serial not captured | Day-1: client does not collect MAC/Serial on ChromeOS platform | prepareMessageForDem / host_info | S3 |
+| [ENG-733735](https://netskope.atlassian.net/browse/ENG-733735) | Enable button greyed out after user disable | Steering mode NONE check does not account for NPA-enabled config | Admin Enable/Disable / Client UI | S3 |
 
 ## iOS
 
@@ -489,15 +547,26 @@ iOS has the most limited status reporting support. The Network Extension (NE) sh
 
 ## ChromeOS
 
-*No ChromeOS-specific client status bugs found in escalation data. ChromeOS shares the Android codebase for status reporting.*
+**Bug Count**: 1 (shared with Android) | **Key Gaps**: MAC address and Serial number capture
+
+ChromeOS shares the Android codebase for status reporting. ENG-651043 is a Day-1 issue where the ChromeOS client does not capture MAC address and Serial number details, causing these fields to appear blank on the admin Devices page. This bug has been reproducible since R112 (over one year old).
 
 ---
 
 ## Backend
 
-**Bug Count**: 2 (ENG-420917, ENG-420918) | **Key Gaps**: Backend migration, device visibility
+**Bug Count**: 4 (ENG-420917, ENG-420918, ENG-684014, ENG-769147) | **Key Gaps**: Backend migration, device visibility, IDP user status sync, admin disable propagation
 
-The backend bugs are the most impactful in this chapter: they caused entire fleets of devices to disappear from the admin console after a backend migration. While the root cause was backend-side (device status sync failure during migration), client-side testing should verify device visibility after pipeline flag changes.
+The backend bugs are the most impactful in this chapter: they caused entire fleets of devices to disappear from the admin console after a backend migration. ENG-684014 demonstrates that client status does not follow IDP user status -- when a user is disabled in the IDP, the NSClient should reflect that status, but the logic was broken after R125 changes and had to be reverted. ENG-769147 shows that admin-initiated disable commands from the tenant UI are not properly downloaded by the client because the supportability params are not fetched.
+
+### Backend Bug Mapping
+
+| Bug ID | Summary | Root Cause | Flow Point | Severity |
+|--------|---------|------------|------------|----------|
+| [ENG-420917](https://netskope.atlassian.net/browse/ENG-420917) | Devices missing from admin UI | Backend migration + device status sync failure | Admin Console Devices Page | S2 |
+| [ENG-420918](https://netskope.atlassian.net/browse/ENG-420918) | Device not visible on Devices Page | Backend migration + device status sync failure | Admin Console Devices Page | S2 |
+| [ENG-684014](https://netskope.atlassian.net/browse/ENG-684014) | Client status not following IDP user status | R125 change broke mongo-based user disable logic; reverted to pre-R125 with UM API | Management Plane | S2 |
+| [ENG-769147](https://netskope.atlassian.net/browse/ENG-769147) | Admin disable not downloaded by client | Client does not download supportability params to process admin disable | Management Plane | S3 |
 
 ## Automation Coverage Summary
 
@@ -558,6 +627,16 @@ Every install, upgrade, rollback, and uninstall generates a status event. The up
 | Pipeline flag toggle -> Device visibility | 🟡 Medium | -- | ❌ Not covered |
 | Cache overflow -> Critical event loss | 🟡 Medium | -- | ❌ Not covered |
 | Old version upgrade -> DEM user visibility | 🔴 High | ENG-534944 | ❌ Not covered |
+| DC status change -> Status event | 🔴 High | ENG-392768 | ❌ Not covered |
+| Backend device sync -> Device visibility | 🔴 High | ENG-418774, ENG-428536 | ❌ Not covered |
+| Longpoll connection -> Notification delivery | 🔴 High | ENG-469289 | ❌ Not covered |
+| MAC/Serial collection -> DEM host_info | 🟡 Medium | ENG-564408, ENG-651043 | ❌ Not covered |
+| Mac UI changes -> Client compatibility | 🟡 Medium | ENG-654877 | ❌ Not covered |
+| IDP user disable -> Client status | 🔴 High | ENG-684014 | ❌ Not covered |
+| Config name matching -> Status POST | 🟡 Medium | ENG-686265 | ❌ Not covered |
+| NPA steering mode -> Enable button state | 🟡 Medium | ENG-733735 | ❌ Not covered |
+| Admin disable -> Client download | 🔴 High | ENG-769147 | ❌ Not covered |
+| Notification template -> HTML encoding | 🟡 Medium | ENG-781045 | ❌ Not covered |
 
 ## Configuration Parameters
 
@@ -708,6 +787,18 @@ Every install, upgrade, rollback, and uninstall generates a status event. The up
 | [ENG-601667](https://netskope.atlassian.net/browse/ENG-601667) | Service dependency failure + wrong version in status after rollback | Windows | During upgrade rollback, installer reports wrong client version to backend via client status | S3 | No (Day-1) | Corner Case |
 | [ENG-637576](https://netskope.atlassian.net/browse/ENG-637576) | DEM tenant ID reset to 0 -- user scores blank | Windows | Token rotation during config update resets tenant ID; DEM posts with tenant_id="0" causing payload validation failure | S2 | Yes | Corner Case |
 | [ENG-671884](https://netskope.atlassian.net/browse/ENG-671884) | Mac uninstall status not posted to backend | Mac | With clientEncryptBranding=1, InstallerUtil post_uninstall runs after branding cleanup; fix moves post_uninstall before uninstallAuxiliarySvc | S3 | No | Corner Case |
+| [ENG-392768](https://netskope.atlassian.net/browse/ENG-392768) | Device Posture Change event not refined | Windows | DC status event not properly generated; monthly regression missed | S3 | Yes | Test Gap |
+| [ENG-418774](https://netskope.atlassian.net/browse/ENG-418774) | Device not visible on Devices Page | Windows, Mac | Backend device status sync failure; internal defect ENG-408293 | S2 | No | Internal Found |
+| [ENG-428536](https://netskope.atlassian.net/browse/ENG-428536) | Devices missing from Tenant | Windows | nsdeviceuid / old_nsdeviceuid mismatch causes device entry loss | S2 | Yes | Test Gap |
+| [ENG-469289](https://netskope.atlassian.net/browse/ENG-469289) | No notification popup due to absent longpoll | Windows | Longpoll connection not triggered; no alert/block notifications delivered | S2 | No | Corner Case |
+| [ENG-564408](https://netskope.atlassian.net/browse/ENG-564408) | MAC address not displayed for some Mac machines | Mac | Client fails to send MAC address in status payload for some machines | S3 | No | Corner Case |
+| [ENG-651043](https://netskope.atlassian.net/browse/ENG-651043) | ChromeOS MAC and Serial not captured | Android (ChromeOS) | Day-1: client does not collect MAC/Serial on ChromeOS; reproducible since R112 | S3 | No (Day-1) | Test Gap |
+| [ENG-654877](https://netskope.atlassian.net/browse/ENG-654877) | Mac client UI compatibility issues | Mac | Recent Mac UI changes introduced compatibility issues; internally reported by QE | S3 | No | Internal Found |
+| [ENG-684014](https://netskope.atlassian.net/browse/ENG-684014) | Client status not following IDP user status | Backend | R125 change broke mongo-based user disable logic; reverted to pre-R125 with UM API | S2 | Yes | Test Gap |
+| [ENG-686265](https://netskope.atlassian.net/browse/ENG-686265) | "Cannot find matched client configuration" post R127 | Windows | Missing space in config name causes API mismatch between WebUI and client status | S3 | No | Corner Case |
+| [ENG-733735](https://netskope.atlassian.net/browse/ENG-733735) | Android Enable button greyed out after user disable | Android | Steering mode NONE check does not account for NPA-enabled config | S3 | No (Day-1) | Enhancement |
+| [ENG-769147](https://netskope.atlassian.net/browse/ENG-769147) | Admin disable not downloaded by client | Backend | Client does not download supportability params to process admin disable from UI | S3 | No | Corner Case |
+| [ENG-781045](https://netskope.atlassian.net/browse/ENG-781045) | Notification HTML % encoding duplicates characters | Windows | HTML percent encoding in notification templates duplicates last 7 characters | S3 | No | Corner Case |
 
 ---
 

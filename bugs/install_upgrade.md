@@ -4,7 +4,7 @@ Bugs related to installation, upgrade, downgrade, uninstall, enrollment, and onb
 
 > Source: Escalation Bug Review spreadsheet, filtered by keywords: install, upgrade, uninstall, enrollment, migration, addon, onboard.
 
-**Total: 54 bugs**
+**Total: 63 bugs**
 
 ---
 
@@ -1594,3 +1594,184 @@ Next steps:
 
 ---
 
+
+
+## --- Added from Excel (not previously in bugs/) ---
+
+## 55. ENG-457109
+
+**Jira**: [ENG-457109](https://netskope.atlassian.net/browse/ENG-457109)
+
+**Description**: Since upgrading to R113 my customer noticed that they are unable to run outer pcaps on NS Client unless they disabled "Protect Client configuration and resources" in Tamperproof set
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | Self Protection |
+| Regression | Yes |
+| Bug Type | Missing in Regression |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - In R113 refactored the nsclient log improvement and it caused this regression.
+- Need to add Test case.
+- Can be automatable
+
+---
+## 56. ENG-493685
+
+**Jira**: [ENG-493685](https://netskope.atlassian.net/browse/ENG-493685)
+
+**Description**: Android NS Client. User required to enter tenant name
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Android |
+| Feature | MDM |
+| Regression | No |
+| Bug Type | Test Gap |
+| Automatable | No |
+| Interop | Yes |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - Need to include this case in MDM and add the validation.
+- Test Gap scope: Interop test
+- Interop: MDM
+
+---
+## 57. ENG-529561
+
+**Jira**: [ENG-529561](https://netskope.atlassian.net/browse/ENG-529561)
+
+**Description**: "OTP of given user,device and tenantID is not found, agent needs to request OTP" error on devices UI page for some tenants.
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | OTP |
+| Regression | No |
+| Bug Type | Test Gap |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: Add Backend detailed test case as per the QA recommendation.
+- Test Gap scope: Negative testing
+
+---
+## 58. ENG-647666
+
+**Jira**: [ENG-647666](https://netskope.atlassian.net/browse/ENG-647666)
+
+**Description**: [NSW Police] NPA getting disconnected for all Andriod Users after NSClient OPT Enabled
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Android |
+| Feature | OTP |
+| Regression | Yes |
+| Bug Type | Corner case |
+| Automatable | No |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - Regression.
+- This issue was caused when both enableSaveBatteryForSleepMode and OTP  FF are enabled.
+
+---
+## 59. ENG-729324
+
+**Jira**: [ENG-729324](https://netskope.atlassian.net/browse/ENG-729324)
+
+**Description**: [TD Bank] nsdiag.exe not working with tamperproof enabled after upgrading to 127.1
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | Self-Protection |
+| Regression | No |
+| Bug Type | Corner case |
+| Automatable | No |
+| Interop | Yes |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: With Tamper proof enabled, The customer updated from R114 to R127.1.0.2437 & after that, Customer faced this issue of nsdiag hanging on 2 off 3 clients. To further analyze, capturing dumps was tried, but due to tamper proof, it will not allow READ access. As also, nsdiag hanging looks to be an interop issue due to the removal of READ permission with tamper proof enabled. So a flag allowProcessReadPermission was created to access, by which if enabled, READ permission will be granted. Also for any issue analysis, we can now take process dumps also with tamper proof enabled as well.
+
+---
+## 60. ENG-768398
+
+**Jira**: [ENG-768398](https://netskope.atlassian.net/browse/ENG-768398)
+
+**Description**: [CLONE] EHF build for EIMF-61 Revert Downloader Security Enhancement
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Backend |
+| Feature | NSC-SVC-Downloader |
+| Regression | No |
+| Bug Type | Enhancement |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: -An update to downloader API `/dlr/:ostype/get` was made for R131 which requires the presence of an activation key in the downloader URL.
+Although this endpoint is internal, some customers were using it and were not properly informed of the update resulting in the security enhancement to the API to impact them. 
+-The fix was to revert the changes to /dlr/:ostype/get API which enforce the usage of activation key in request.
+
+---
+## 61. ENG-781465
+
+**Jira**: [ENG-781465](https://netskope.atlassian.net/browse/ENG-781465)
+
+**Description**: [vgh.goskope.com] NS client gray out after upgrading NS client from 126 to 129.
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | NSC-FT-TamperProofing |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: ProductID in registry can change due to system settings changed, that caused Client not enabled, fix in Client is able to the change, and keep Client enabled.
+
+---
+## 62. ENG-792144
+
+**Jira**: [ENG-792144](https://netskope.atlassian.net/browse/ENG-792144)
+
+**Description**: Adding more than one iOS link to email invite template leads to invalid App Store link
+
+| Field | Value |
+|-------|-------|
+| OS Platform | iOS |
+| Feature | iOS- Backend |
+| Regression | Day-1 |
+| Bug Type | Corner Case |
+| Automatable | yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: Normal email invitations are working. This issue arises when a customer creates an email template with two instances of the variable `{i{NS_IOSCLIENT}}` and sends a new email invitation.
+
+---
+## 63. ENG-832690
+
+**Jira**: [ENG-832690](https://netskope.atlassian.net/browse/ENG-832690)
+
+**Description**: [Nintendo] Disable Internet Security by OTP not working on MAC
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Mac |
+| Feature | OTP |
+| Regression | Yes |
+| Bug Type | Missing in Regressions |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: NPLAN-5196 feature code merge removed some existing code causing OTP and Master password feature to break
+ Missing in Regression
+
+---

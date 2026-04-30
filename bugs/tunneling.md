@@ -4,7 +4,7 @@ Bugs related to tunnel establishment, tunnel disconnect, SPDY/DTLS protocols, ga
 
 > Source: Escalation Bug Review spreadsheet, filtered by keywords: tunnel, SPDY, DTLS, gateway, GSLB, reconnect, heartbeat, crash+tunnel.
 
-**Total: 59 bugs**
+**Total: 64 bugs**
 
 ---
 
@@ -1762,3 +1762,94 @@ Next steps:
 
 ---
 
+
+
+## --- Added from Excel (not previously in bugs/) ---
+
+## 60. ENG-437202
+
+**Jira**: [ENG-437202](https://netskope.atlassian.net/browse/ENG-437202)
+
+**Description**: Android clients getting disconnected intermittently
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Android |
+| Feature | Data path |
+| Regression | No |
+| Bug Type | Test Gap(Improve Platform Coverage) |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - Specific to Lenovo platform.
+- Test Gap scope: platform coverage
+
+---
+## 61. ENG-627806
+
+**Jira**: [ENG-627806](https://netskope.atlassian.net/browse/ENG-627806)
+
+**Description**: Intermittent segmentation fault in Linux NS Client R117 and R122: crash
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Linux |
+| Feature |  |
+| Source Sheet | Q226 Feb |
+
+---
+## 62. ENG-635063
+
+**Jira**: [ENG-635063](https://netskope.atlassian.net/browse/ENG-635063)
+
+**Description**: [ Lucid Motors ] Linux client is crashing often
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Windows |
+| Feature | NSC-FT-Service |
+| Source Sheet | Q226 Feb |
+
+---
+## 63. ENG-679477
+
+**Jira**: [ENG-679477](https://netskope.atlassian.net/browse/ENG-679477)
+
+**Description**: Intermittent segmentation fault in Linux NS Client R117 and R122: crash
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Linux |
+| Feature | NSC FT Service |
+| Regression | No |
+| Bug Type | Corner case |
+| Automatable | Yes |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: - The tie socket instance was freed before the callback function of the object finishes.
+- The fix is Hold tie socket instance till the end of the callback to avoid use-after-free situation.
+- It appears the issue exists in older build as well, but it is not clear this is a Day-1 issue or not. 
+- Corner case.
+
+---
+## 64. ENG-774714
+
+**Jira**: [ENG-774714](https://netskope.atlassian.net/browse/ENG-774714)
+
+**Description**: No connectivity on 802.1x Network with NSC enabled in Linux
+
+| Field | Value |
+|-------|-------|
+| OS Platform | Linux |
+| Feature | Data path |
+| Regression | Day-1 |
+| Bug Type | SetupIssue |
+| Automatable | No |
+| Interop | No |
+| Source Sheet | Customer Escalations - Overall |
+
+**Comments**: New feature flag added for 802.1x network, however automation can be run only once setup is available tracked by ENG-795961
+
+---

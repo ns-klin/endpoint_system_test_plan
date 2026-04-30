@@ -1,6 +1,6 @@
 # 09. Traffic Interception & Packet Processing
 
-**Escalation Bug Count**: 47 | **Day-1**: 15 (32%) | **Corner Case**: 12 (26%) | **Regression**: 8 (17%) | **Test Gap**: 6 (13%)
+**Escalation Bug Count**: 91 | **Day-1**: 23 (25%) | **Corner Case**: 18 (20%) | **Regression**: 9 (10%) | **Test Gap**: 9 (10%) | **Enhancement**: 8 (9%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=741472198#gid=741472198)**
 
@@ -81,6 +81,9 @@ graph TB
     LINUX_SHIM --> TUN_DEV
     ANDROID_SHIM --> VPN_SVC
 
+    SC -.-> BUG_430841["🔴 BUG ENG-430841<br/>i18n: user alert justification hint"]
+    SC -.-> BUG_434019["🔴 BUG ENG-434019<br/>Config names garbled with non-ASCII"]
+
     style FD fill:#4A90D9,color:#fff
     style WFP fill:#E8A838,color:#fff
     style NE fill:#E8A838,color:#fff
@@ -143,6 +146,11 @@ flowchart TD
     EXCEPTION -.-> BUG_855335["🔴 BUG ENG-855335<br/>Wildcard exception bypasses ALL traffic"]
     CASB_CHECK -.-> BUG_948106["🔴 BUG ENG-948106<br/>35K+ domains crash domain list"]
     FW_RULES -.-> BUG_655009["🔴 BUG ENG-655009<br/>CFW exception add/delete timing"]
+    FW_RULES -.-> BUG_398387["🔴 BUG ENG-398387<br/>CFW not recognizing traffic as CFW app"]
+    PROTO_CHECK -.-> BUG_635104["🔴 BUG ENG-635104<br/>CFW not blocking Tor browser"]
+    EXCEPTION -.-> BUG_455132["🔴 BUG ENG-455132<br/>Off-prem steering FW applied incorrectly"]
+    CASB_CHECK -.-> BUG_451987["🔴 BUG ENG-451987<br/>Client Enabled despite IPSec bypass"]
+    PORT_CHECK -.-> BUG_739968["🔴 BUG ENG-739968<br/>Private IPs steered to SWG"]
 
     style STEER fill:#4CAF50,color:#fff
     style BYPASS_CASB fill:#FF9800,color:#fff
@@ -156,11 +164,12 @@ flowchart TD
 
 | Node | Risk | Assessment |
 |---|---|---|
-| Steering Mode Decision | 🔴 High | **ENG-448002** — UDP 3478 incorrectly steered in Web mode (port list logic) |
+| Steering Mode Decision | 🔴 High | **ENG-448002** — UDP 3478 incorrectly steered in Web mode (port list logic); **ENG-451987** — Client status shows Enabled despite IPSec bypass mode |
 | CASB Domain Check | 🔴 High | **ENG-948106** — 35K+ domains with long names causes crash; **ENG-872456** — 30K+ domains crash on ChromeOS |
-| CFW Protocol Check | 🔴 High | **ENG-685566** — Netbios (port 137) bypassed in CFW mode |
-| Exception Check | 🔴 High | **ENG-855335** — Wildcard exception (::/0 or 0.0.0.0/0) bypasses all SWG traffic |
-| CFW Firewall Rules | 🔴 Medium | **ENG-655009** — FW exception add/delete timing issue |
+| CFW Protocol Check | 🔴 High | **ENG-685566** — Netbios (port 137) bypassed in CFW mode; **ENG-635104** — CFW not blocking Tor browser traffic |
+| Exception Check | 🔴 High | **ENG-855335** — Wildcard exception (::/0 or 0.0.0.0/0) bypasses all SWG traffic; **ENG-455132** — Off-prem steering FW exception applied incorrectly on-prem |
+| CFW Firewall Rules | 🔴 High | **ENG-655009** — FW exception add/delete timing issue; **ENG-398387** — CFW no longer recognizing traffic as belonging to CFW app |
+| Port Check (Web) | 🔴 High | **ENG-739968** — Private IPs steered to SWG due to nsexception.json race condition |
 | Port Check (Web) | 🟡 Medium | Predicted: mode transition race between disableFilter/enableFilter |
 
 ---
@@ -398,6 +407,11 @@ flowchart TD
     PEND -.-> BUG_649593["🔴 BUG ENG-649593<br/>ACK numbers mangled with proxy"]
     EXCEPTION_CHECK -.-> BUG_654108["🔴 BUG ENG-654108<br/>IPv4/6 exception moved to service in CFW"]
     WFP_LAYER -.-> BUG_925885["🔴 BUG ENG-925885<br/>PSIRT: IOCTL anti-tamper bypass"]
+    WFP_LAYER -.-> BUG_555622["🔴 BUG ENG-555622<br/>BSOD with DNS steering on Citrix"]
+    EXCEPTION_CHECK -.-> BUG_579740["🔴 BUG ENG-579740<br/>DNS steered despite exception rule"]
+    DISABLED -.-> BUG_561500["🔴 BUG ENG-561500<br/>DNS not steered after FailClose recovery"]
+    DISABLED -.-> BUG_895081["🔴 BUG ENG-895081<br/>FailClose not dropping traffic after reboot"]
+    TUNNEL_CHECK -.-> BUG_928461["🔴 BUG ENG-928461<br/>Multi-user FC disconnect"]
 
     style PEND fill:#4CAF50,color:#fff
     style PERMIT fill:#FF9800,color:#fff
@@ -408,11 +422,12 @@ flowchart TD
 
 | Node | Risk | Assessment |
 |---|---|---|
-| WFP Layer Callout | 🔴 Critical | **ENG-925885**, **ENG-925887** — PSIRT: IOCTL anti-tamper bypass in stadrv |
-| Tunnel Check | 🔴 High | **ENG-438565** — Large TCP segmented packets from loopback dropped |
+| WFP Layer Callout | 🔴 Critical | **ENG-925885**, **ENG-925887** — PSIRT: IOCTL anti-tamper bypass in stadrv; **ENG-555622** — BSOD with DNS steering on Citrix servers |
+| Tunnel Check | 🔴 High | **ENG-438565** — Large TCP segmented packets from loopback dropped; **ENG-928461** — Multi-user FailClose disconnect |
 | Domain Lookup (CASB) | 🔴 High | **ENG-438566** — DNS over TCP not learned into domain-to-IP table |
 | Pend Packet | 🔴 High | **ENG-649593** — ACK numbers mangled with local proxy + cert-pin bypass |
-| Exception Check | 🔴 High | **ENG-654108** — IPv4/IPv6 exception handling moved from driver to service in CFW |
+| Exception Check | 🔴 High | **ENG-654108** — IPv4/IPv6 exception handling moved from driver to service in CFW; **ENG-579740** — DNS traffic steered despite exception rule |
+| Driver Enabled Check | 🔴 High | **ENG-561500** — DNS not steered after FailClose recovery; **ENG-895081** — FailClose not dropping traffic after reboot |
 | Shim Read | 🔴 High | **ENG-619327** — Out-of-Bounds Read from malformed DNS packet |
 | Packet Sink | 🟡 Medium | Predicted: queue overflow under high traffic burst |
 
@@ -571,6 +586,7 @@ flowchart LR
     CLASSIFY -.-> BUG_773191["🔴 BUG ENG-773191<br/>Transparent proxy stops when NPA DISABLED"]
     DP -.-> BUG_436114["🔴 BUG ENG-436114<br/>IPv6 local link DNS not honored"]
     TP -.-> BUG_680385["🔴 BUG ENG-680385<br/>DHCP broken in CFW on macOS 15.x"]
+    CLASSIFY -.-> BUG_538206["🔴 BUG ENG-538206<br/>NS Client crashes on macOS"]
 
     style CLASSIFY fill:#4A90D9,color:#fff
     style UTUN fill:#E8A838,color:#fff
@@ -580,7 +596,7 @@ flowchart LR
 
 | Node | Risk | Assessment |
 |---|---|---|
-| bypassFlow() Classification | 🔴 Critical | **ENG-855335** — Wildcard ::/0 exception bypasses all SWG traffic; **ENG-773191** — Transparent proxy stops when NPA in DISABLED state |
+| bypassFlow() Classification | 🔴 Critical | **ENG-855335** — Wildcard ::/0 exception bypasses all SWG traffic; **ENG-773191** — Transparent proxy stops when NPA in DISABLED state; **ENG-538206** — NS Client crashes on macOS |
 | DNS Proxy | 🔴 High | **ENG-436114** — IPv6 local link DNS not honored; **ENG-918295** — NPA DNS queries go to BWAN instead |
 | Transparent Proxy | 🔴 High | **ENG-680385** — DHCP broken in CFW mode on macOS 15.4+; **ENG-645301** — DHCP excluded from CFW |
 | AirDrop Exception | 🔴 Medium | **ENG-538734** — Airplay mirroring broken with Crestron Airmedia (port 5353) |
@@ -930,6 +946,12 @@ flowchart TB
     PKT_FLOW -.-> BUG_637794["🔴 BUG ENG-637794<br/>NPA traffic not tunneled on ChromeOS"]
     VPN_SVC -.-> BUG_906435["🔴 BUG ENG-906435<br/>Client steers own MP traffic"]
     TUN_R -.-> BUG_402499["🔴 BUG ENG-402499<br/>QUIC UDP/443 not steered"]
+    VPN_SVC -.-> BUG_533981["🔴 BUG ENG-533981<br/>Tunnel flaps on Android"]
+    VPN_SVC -.-> BUG_592681["🔴 BUG ENG-592681<br/>Tunnel gets dropped often"]
+    VPN_SVC -.-> BUG_917549["🔴 BUG ENG-917549<br/>Client stuck in Connecting state"]
+    VPN_SVC -.-> BUG_652754["🔴 BUG ENG-652754<br/>Android clients stuck connecting"]
+    TUN_R -.-> BUG_577918["🔴 BUG ENG-577918<br/>NPA service not restarting on ChromeOS"]
+    PKT_FLOW -.-> BUG_707515["🔴 BUG ENG-707515<br/>Google workspace forced via Reverseproxy"]
 
     style VPN_FW fill:#E8A838,color:#fff
     style VPN_SVC fill:#4A90D9,color:#fff
@@ -939,9 +961,9 @@ flowchart TB
 
 | Node | Risk | Assessment |
 |---|---|---|
-| nsPktFlowMgr | 🔴 Critical | **ENG-525399** — CertPinned regex causes ALL traffic bypass; **ENG-637794** — NPA traffic not tunneled on ChromeOS |
-| VpnService (Java/JNI) | 🔴 High | **ENG-906435** — Client steers own management plane traffic; **ENG-441957** — NPA disconnections after network switch |
-| nsTunHandler | 🔴 High | **ENG-402499** — QUIC (UDP/443) not supported, packets dropped |
+| nsPktFlowMgr | 🔴 Critical | **ENG-525399** — CertPinned regex causes ALL traffic bypass; **ENG-637794** — NPA traffic not tunneled on ChromeOS; **ENG-707515** — Google workspace forced via Reverseproxy on Android |
+| VpnService (Java/JNI) | 🔴 Critical | **ENG-906435** — Client steers own management plane traffic; **ENG-441957** — NPA disconnections after network switch; **ENG-533981** — Tunnel flaps on Android; **ENG-592681** — Tunnel gets dropped often; **ENG-917549** — Client stuck in Connecting state; **ENG-652754** — Android clients stuck in connecting state |
+| nsTunHandler | 🔴 High | **ENG-402499** — QUIC (UDP/443) not supported, packets dropped; **ENG-577918** — NPA service not restarting automatically on ChromeOS |
 | nsDnsMgr | 🔴 Medium | **ENG-671659** (iOS) — IPv6 link-local DNS scope_id not set |
 | nsLwipConverter | 🟡 Medium | Predicted: TCP state leak with rapid VPN reconnects |
 
@@ -975,6 +997,36 @@ On iOS, NSClient uses `NEPacketTunnelProvider` from the NetworkExtension framewo
 - **Gateway configuration**: `setTunnelDstHostname()`, `setTunnelPopName()` for PoP selection
 - **NPA remote gateway**: `setNpaRemoteGateway()` for private access
 - **CIDR exceptions**: `setNEIPExceptionCIDR()` supports CIDR-based IP exception lists
+
+The iOS packet tunnel provider intercepts traffic at the network extension level, routes it through the tunnel, and handles NPA private IP bypass via exclude routes. Issues arise when NPA is enabled alongside IP-based exceptions, or when third-party apps rely on protocols not fully supported by the tunnel provider.
+
+```mermaid
+flowchart TD
+    IOS_APP[iOS Application] --> PKT_TUNNEL["NEPacketTunnelProvider<br/>(Packet Tunnel)"]
+    PKT_TUNNEL --> IOS_CLASSIFY{Exception<br/>or NPA rule?}
+
+    IOS_CLASSIFY -->|Exception IP| IOS_EXCLUDE["excludeRoute<br/>(bypass at OS level)"]
+    IOS_CLASSIFY -->|NPA match| IOS_NPA["NPA Tunnel<br/>(private access)"]
+    IOS_CLASSIFY -->|Steer| IOS_TUNNEL["SWG Tunnel<br/>(Netskope Cloud)"]
+    IOS_CLASSIFY -->|None mode| IOS_PASS["Pass-through"]
+
+    IOS_EXCLUDE -.-> BUG_672788["🔴 BUG ENG-672788<br/>Internal website access broken on iOS"]
+    PKT_TUNNEL -.-> BUG_496412["🔴 BUG ENG-496412<br/>NCP app issue on iOS with NSClient"]
+
+    style PKT_TUNNEL fill:#4A90D9,color:#fff
+    style IOS_TUNNEL fill:#4CAF50,color:#fff
+    style IOS_NPA fill:#4CAF50,color:#fff
+```
+
+### iOS Node Risk Assessment
+
+| Node | Risk | Assessment |
+|---|---|---|
+| NEPacketTunnelProvider | 🔴 High | **ENG-496412** — NCP app issue on iOS when NSClient enabled; TCP over DNS not supported on iOS |
+| excludeRoute (Exception) | 🔴 High | **ENG-672788** — Internal website access broken; NPA-enabled exception IPs not added to excludeRoute |
+| DNS IP Mapping | 🔴 High | **ENG-803728** — Consecutive DNS responses overwrite IP mapping, breaking connections |
+| DNS IPv6 Scope | 🔴 Medium | **ENG-671659** — IPv6 link-local DNS scope_id not set on iOS |
+| Network Switch | 🟡 Medium | **ENG-450735** — iOS users cannot access internal apps after upgrade (regression) |
 
 ### Disconnect Handling
 
@@ -1075,6 +1127,7 @@ flowchart TD
     V2_MATCH -.-> BUG_654108E["🔴 BUG ENG-654108<br/>IPv4/6 exception moved to service in CFW"]
     V2_MATCH -.-> BUG_855335E["🔴 BUG ENG-855335<br/>Wildcard ::/0 bypasses all traffic"]
     V1_MATCH -.-> RISK_EXCEPT["🟡 Warning: V1 exception lacks IPv6 range matching"]
+    USERSPACE -.-> BUG_482990["🔴 BUG ENG-482990<br/>Captive portal not detected"]
 
     style BYPASS_DRV fill:#4CAF50,color:#fff
 ```
@@ -1086,7 +1139,7 @@ flowchart TD
 | V2 Exception Matching | 🔴 High | **ENG-654108** — IPv4/IPv6 exception handling moved from driver to service in CFW; **ENG-855335** — Wildcard rules bypass all traffic |
 | V1 Exception Matching | 🟡 Medium | V1 lacks full IPv6 range matching capability |
 | Feature Flags | 🔴 Medium | **ENG-805334** — injectDNSAtNetworkLayer flag needed for Citrix VPN interop |
-| Service-Level Matching | 🟡 Low | Predicted: performance degradation under large exception lists |
+| Service-Level Matching | 🔴 Medium | **ENG-482990** — Captive portal not detected; meta refresh HTTP redirection not supported since Day-1 |
 
 ---
 
@@ -1215,7 +1268,7 @@ grep -i "nsNetExtShim\|transparent proxy\|NPA.*DISABLED" nsdebuglog.log
 
 ## Windows Platform Bugs
 
-**Bug Count**: 20 | **Key Gaps**: DNS over TCP, PSIRT IOCTL, VDI multi-session, packet loop, CFW exceptions
+**Bug Count**: 30 | **Key Gaps**: DNS over TCP, PSIRT IOCTL, VDI multi-session, packet loop, CFW exceptions, DNS steering exceptions, i18n
 
 ### Windows Confirmed Bug Mapping
 
@@ -1241,10 +1294,23 @@ grep -i "nsNetExtShim\|transparent proxy\|NPA.*DISABLED" nsdebuglog.log
 | IOCTL Security | ENG-925887 (PSIRT) | Client disable via anti-tamper IOCTL bypass | ❌ Not covered |
 | VDI Connection | ENG-624953 (VDI DaaS) | Existing bypass connections terminated on tunnel start | ❌ Not covered |
 | BWAN Packet Capture | ENG-625957 (NPA+BWAN) | Driver doesn't capture egress packets injected by WinDivert | ❌ Not covered |
+| CFW App Recognition | ENG-398387 (CFW app) | CFW no longer recognizing traffic as belonging to CFW app | ❌ Not covered |
+| CFW Tor Blocking | ENG-635104 (Tor browser) | CFW not blocking Tor anonymity browser | ✅ dse_automation/ |
+| Off-Prem FW Exception | ENG-455132 (on-prem/off-prem) | Off-prem steering firewall applied incorrectly on-prem | ✅ dse_automation/ |
+| DNS Steering BSOD | ENG-555622 (Citrix BSOD) | Citrix servers BSOD with DNS steering enabled | ❌ Not covered |
+| DNS Exception Rule | ENG-579740 (DNS exception) | DNS traffic steered despite exception rule (PTR records) | ❌ Not covered |
+| DNS FailClose Recovery | ENG-561500 (DNS post-FC) | DNS not steered after recovering from FailClose | ❌ Not covered |
+| Steering Mode Status | ENG-451987 (Enabled status) | Client status Enabled despite IPSec bypass detected | ❌ Not covered |
+| IP Classification | ENG-739968 (private IPs) | Private IPs steered to SWG due to nsexception.json race | ❌ Not covered |
+| FailClose Reboot | ENG-895081 (FC reboot) | FailClose not dropping traffic after reboot | ❌ Not covered |
+| Multi-User FC | ENG-928461 (multi-user FC) | Multi-user FailClose disconnect | ❌ Not covered |
+| i18n Alert | ENG-430841 (justification hint) | i18n issue with user alert justification hint text | ❌ Not covered |
+| i18n Config Names | ENG-434019 (non-ASCII garbled) | Steering/Client config names garbled with Japanese chars | ❌ Not covered |
+| Captive Portal | ENG-482990 (captive portal) | Captive portal not detected; meta refresh not supported | ❌ Not covered |
 
 ## macOS Platform Bugs
 
-**Bug Count**: 8 | **Key Gaps**: DHCP in CFW, IPv6 DNS, NPA proxy stop, wildcard exception, BWAN DNS interop
+**Bug Count**: 9 | **Key Gaps**: DHCP in CFW, IPv6 DNS, NPA proxy stop, wildcard exception, BWAN DNS interop, client crash
 
 ### macOS Confirmed Bug Mapping
 
@@ -1258,6 +1324,7 @@ grep -i "nsNetExtShim\|transparent proxy\|NPA.*DISABLED" nsdebuglog.log
 | IPv6 Bypass | ENG-729025 (Google search) | IPv4-only network with bypassPreferredIPv4macOS breaks Google | ❌ Not covered |
 | AirDrop/mDNS | ENG-538734 (Airplay) | Port 5353 mDNS not handled for Airplay mirroring | ❌ Not covered |
 | DNS Interception | ENG-918295 (NPA+BWAN DNS) | DNS queries go to BWAN instead of NPA; service-level DNS missed | ❌ Not covered |
+| Client Stability | ENG-538206 (crash) | NS Client crashes on macOS | ❌ Not covered |
 
 ## Linux Platform Bugs
 
@@ -1274,7 +1341,7 @@ grep -i "nsNetExtShim\|transparent proxy\|NPA.*DISABLED" nsdebuglog.log
 
 ## Android Platform Bugs
 
-**Bug Count**: 9 | **Key Gaps**: CertPinned regex, QUIC, WFC audio, NPA on ChromeOS, self-traffic steering
+**Bug Count**: 15 | **Key Gaps**: CertPinned regex, QUIC, WFC audio, NPA on ChromeOS, self-traffic steering, tunnel stability, NPA auto-restart
 
 ### Android Confirmed Bug Mapping
 
@@ -1289,10 +1356,16 @@ grep -i "nsNetExtShim\|transparent proxy\|NPA.*DISABLED" nsdebuglog.log
 | NPA Traffic (ChromeOS) | ENG-637794 (NPA not tunneled) | bypassIPExceptionAtAndroidOs causes NPA IP overlap | ❌ Not covered |
 | CertPinned Regression | ENG-744457 (WFC audio) | Cert-pinned bypass regression from ENG-673392 fix | ✅ ssl_pinned_app/ |
 | Self-Traffic | ENG-906435 (MP traffic) | Client steers own management plane traffic | ❌ Not covered |
+| Tunnel Stability | ENG-533981 (tunnel flaps) | Tunnel flaps on Android NS client; DNS health check gap | ❌ Not covered |
+| Tunnel Stability | ENG-592681 (tunnel drops) | Tunnel gets dropped often; recovery mechanism bug | ❌ Not covered |
+| VPN Connection State | ENG-917549 (stuck connecting) | Client stuck in Connecting state after WiFi-to-mobile switch | ❌ Not covered |
+| VPN Connection State | ENG-652754 (stuck connecting) | Android clients stuck in connecting state on unreliable network | ❌ Not covered |
+| NPA Auto-Restart | ENG-577918 (NPA on ChromeOS) | Client not restarting NPA service automatically after TUN reset | ❌ Not covered |
+| Reverse Proxy Steering | ENG-707515 (Google workspace) | Google workspace forced via Reverseproxy; com.google.android.gms bypass regression | ❌ Not covered |
 
 ## iOS Platform Bugs
 
-**Bug Count**: 3 | **Key Gaps**: IPv6 link-local DNS, DNS IP mapping overwrite, network switch regression
+**Bug Count**: 5 | **Key Gaps**: IPv6 link-local DNS, DNS IP mapping overwrite, network switch regression, NCP app, internal website access
 
 ### iOS Confirmed Bug Mapping
 
@@ -1301,6 +1374,8 @@ grep -i "nsNetExtShim\|transparent proxy\|NPA.*DISABLED" nsdebuglog.log
 | Network Switch | ENG-450735 (post-upgrade) | iOS users cannot access internal apps after upgrade (regression from ENG-441957 fix) | ❌ Not covered |
 | DNS IPv6 Scope | ENG-671659 (IPv6 link-local) | DNS UDP bypass doesn't set interface scope_id for IPv6 link-local | ❌ Not covered |
 | DNS IP Mapping | ENG-803728 (blank page) | Consecutive DNS responses overwrite IP mapping, breaks existing connections | ❌ Not covered |
+| Packet Tunnel Provider | ENG-496412 (NCP app) | NCP app issue on iOS when NSClient enabled; TCP over DNS not supported | ❌ Not covered |
+| Exception IP Routing | ENG-672788 (internal website) | Internal website access broken; NPA-enabled exception IPs not added to excludeRoute | ❌ Not covered |
 
 ## ChromeOS Platform Bugs
 
@@ -1462,6 +1537,28 @@ sequenceDiagram
 | **ENG-925885** | PSIRT: Anti-tamper IOCTL bypass | Unauthorized IOCTL to stadrv driver | Windows | Day-1 |
 | **ENG-925887** | PSIRT: Client disable via IOCTL | stadrv IOCTL vulnerability | Windows | Day-1 |
 | **ENG-948106** | Linux crash with 35K+ long domains | Domains 230-255 chars with 35K+ entries | Linux | Day-1 |
+| **ENG-398387** | CFW not recognizing traffic as CFW app | CFW app classification failure on VDI | Windows/macOS | Day-1 |
+| **ENG-430841** | i18n: user alert justification hint | Localization issue with justification hint text | Windows | Day-1 |
+| **ENG-434019** | Config names garbled with non-ASCII | Japanese chars in steering/client config garbled in UI | Windows | Day-1 |
+| **ENG-451987** | Client Enabled despite IPSec bypass | Client status shows Enabled even though IPSec steering detected | Windows | Corner Case |
+| **ENG-455132** | Off-prem FW applied incorrectly on-prem | Off-prem steering firewall ICMP exception applied on-prem | Windows | Day-1 |
+| **ENG-482990** | Captive portal not detected | Meta refresh HTTP redirection not supported since Day-1 | Windows/macOS | Enhancement |
+| **ENG-496412** | NCP app issue on iOS with NSClient | TCP over DNS not supported on iOS; enhancement fix | iOS | Enhancement |
+| **ENG-533981** | Tunnel flaps on Android | DNS tunnel health check gap causes tunnel instability | Android | Test Gap |
+| **ENG-538206** | NS Client crashes on macOS | Client crash on macOS | macOS | Corner Case |
+| **ENG-555622** | BSOD with DNS steering on Citrix | DNS IP in steering + bypass list causes BSOD on Citrix VDI | Windows | Corner Case |
+| **ENG-561500** | DNS not steered after FailClose recovery | Web mode + DNS steering + FailClose combination fails | Windows | Day-1 |
+| **ENG-577918** | NPA not restarting on ChromeOS | Client fails to re-enable NPA after TUN device reset | Android/ChromeOS | Test Gap |
+| **ENG-579740** | DNS steered despite exception rule | PTR record type exception not working; enhancement | Windows | Enhancement |
+| **ENG-592681** | Tunnel gets dropped often on Android | Recovery mechanism bug leaves both tunnels disconnected | Android | Enhancement |
+| **ENG-635104** | CFW not blocking Tor browser | Block action with CFW steering was broken | Windows | Test Gap |
+| **ENG-652754** | Android clients stuck connecting | Network unreliability causes stuck connecting state | Android | Corner Case |
+| **ENG-672788** | Internal website access broken on iOS | NPA-enabled exception IPs not added to excludeRoute | iOS | Corner Case |
+| **ENG-707515** | Google workspace forced via Reverseproxy | com.google.android.gms default bypass regression | Android | Regression |
+| **ENG-739968** | Private IPs steered to SWG | Race condition in nsexception.json read/write | Windows | Day-1 |
+| **ENG-895081** | FailClose not dropping traffic after reboot | FailClose not enforced when NSGW unreachable post-reboot | Windows | Day-1 |
+| **ENG-917549** | Android client stuck in Connecting | WiFi-to-mobile switch loses tunnel state update to UI | Android | Day-1 |
+| **ENG-928461** | Multi-user FailClose disconnect | Multiple users disconnect and enter FailClose state | Windows | Corner Case |
 
 ---
 

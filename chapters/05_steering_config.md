@@ -1,6 +1,6 @@
 # 05. Steering Config
 
-**Escalation Bug Count**: 103 | **Regression**: 21 (20%) | **Day-1**: 32 (31%) | **Test Gap**: 13 (13%) | **Corner Case**: 27 (26%)
+**Escalation Bug Count**: 105 | **Regression**: 21 (20%) | **Day-1**: 32 (31%) | **Test Gap**: 13 (13%) | **Corner Case**: 27 (26%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1060361683#gid=1060361683)**
 
@@ -43,6 +43,7 @@ flowchart TD
     STATIC_MODE --> NONE_CHECK
     
     NONE_CHECK -->|Yes| BUG_NONE["🔴 BUG ENG-384041<br/>NONE mode should bypass<br/>but triggers FailClose"]
+    NONE_CHECK -->|Not steered| BUG_425429["🔴 BUG ENG-425429<br/>Client doesn't steer traffic<br/>when enabled"]
     NONE_CHECK -->|No| EXCEPT{Exception<br/>Match?}
     
     EXCEPT -->|Match| BYPASS[BYPASS]
@@ -147,6 +148,12 @@ stateDiagram-v2
         triggers FailClose
         🔴 BUG ENG-591725: NONE to Web/All
         tunnel not established
+    end note
+
+    note left of NonDynamic
+        🔴 BUG ENG-593481: Linux apt-get
+        fails with Client enabled
+        (non-dynamic steering issue)
     end note
 ```
 
@@ -1033,6 +1040,8 @@ A recurring pattern in NSClient escalation history: fixing one bug introduces a 
 | **ENG-742949** | Cert-pinned bypass not effective | Regression from ENG-649593 fix: bypass by tunnel cert-pinned traffic still decrypted | Fix cert-pinned bypass logic | Windows |
 | **ENG-855335** | Wildcard exception (0.0.0.0/0, ::/0) causes all traffic bypass | Client code error when adding include/exclude rules with ::/128 or 0.0.0.0/0, all traffic bypassed | Fix wildcard exception handling logic | Mac |
 | **ENG-918451** | Tunnel does not reconnect after Off-Prem to On-Prem switch | Windows regression from Android fix (ENG-707767): client does not attempt reconnect after switch | Fix tunnel reconnect logic after on-prem detection | Windows |
+| [ENG-425429](https://netskope.atlassian.net/browse/ENG-425429) | CGGlobal: NS Client doesn't steer traffic when enabled |
+| [ENG-593481](https://netskope.atlassian.net/browse/ENG-593481) | [Maif] apt-get update on Linux host is failing with Client enabled |
 
 ### Additional Steering Bugs Referenced in Cross-Flow Analysis
 

@@ -1,6 +1,6 @@
 # 02. Enrollment
 
-**Escalation Bug Count**: 14 | **Test Gap**: 7 (50%) | **Corner Case**: 4 (29%) | **Day-1**: 2 (14%)
+**Escalation Bug Count**: 17 | **Test Gap**: 7 (50%) | **Corner Case**: 4 (29%) | **Day-1**: 2 (14%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=1486840166#gid=1486840166)**
 
@@ -91,6 +91,9 @@ flowchart TD
 
     BUG_556081["🔴 ENG-556081<br/>MS Autopilot enrollment<br/>failure — SYSTEM context"]
     PARSE -.->|Bug: Autopilot| BUG_556081
+
+    BUG_493685["🔴 ENG-493685<br/>Android MDM: user required<br/>to enter tenant name manually"]
+    MODE_AD -.->|Bug: MDM| BUG_493685
 
     style MODE_EMAIL fill:#4CAF50,color:#fff
     style MODE_AD fill:#4CAF50,color:#fff
@@ -234,6 +237,12 @@ flowchart TD
 
     BUG_497728["🔴 ENG-497728<br/>Backend: email vs UPN branding<br/>cache key collision"]
     SVC_PROCESS -.->|Bug: backend| BUG_497728
+
+    BUG_565711["🔴 ENG-565711<br/>IDP enrollment failure<br/>due to browser caching"]
+    IDP_AUTH -.->|Bug: caching| BUG_565711
+
+    BUG_704508["🔴 ENG-704508<br/>IDP authentication state<br/>not changing after re-auth"]
+    STATE_4 -.->|Bug: state stuck| BUG_704508
 
     style STATE_ENROLLED fill:#4CAF50,color:#fff
 ```
@@ -1041,6 +1050,9 @@ Enrollment interacts with installation (Ch01), config download (Ch04), tunnel ma
 | **ENG-671884** | macOS uninstall status not reported | `clientEncryptBranding=1`: InstallerUtil post_uninstall call order incorrect | Move post_uninstall before uninstallAuxiliarySvc() | macOS |
 | **ENG-693785** | Users getting incorrect steering configs | Case-sensitive vs case-insensitive user/usergroup ID handling mismatch | Add skip_user_id_mapping_lookup FF | Backend |
 | **ENG-840031** | WSL segfault during enrollment | WSL IDP is not supported, customer tried custom configurations | Document WSL as unsupported | Linux |
+| [ENG-493685](https://netskope.atlassian.net/browse/ENG-493685) | Android NS Client. User required to enter tenant name |
+| [ENG-565711](https://netskope.atlassian.net/browse/ENG-565711) | [Orbia] Unsuccessful Netskope client enrolment in IDP mode due to caching |
+| [ENG-704508](https://netskope.atlassian.net/browse/ENG-704508) | ENG-704508 CLONE - [Southcoast Health] IDP authentication State is not changing  |
 
 ---
 

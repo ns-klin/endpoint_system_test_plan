@@ -1,6 +1,6 @@
 # 04. Config Download & Management
 
-**Escalation Bug Count**: 7 | **Regression**: 3 (43%) | **Corner Case**: 2 (29%) | **Test Gap**: 1 (14%) | **Day-1**: 1 (14%)
+**Escalation Bug Count**: 11 | **Regression**: 3 (43%) | **Corner Case**: 2 (29%) | **Test Gap**: 1 (14%) | **Day-1**: 1 (14%)
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=658761267#gid=658761267)**
 
@@ -190,7 +190,12 @@ flowchart TD
     SET_VER --> USER_CONFIG[checkAndDownloadAllUserConfig<br/>Per-user config for all sessions]
     
     USER_CONFIG -.->|Token rotation| BUG_637576["🔴 ENG-637576<br/>Tenant ID reset to '0'<br/>after token rotation"]
-    
+
+    UPDATE_OK -.->|Config display bug| BUG_596840["🔴 ENG-596840<br/>Inconsistent config display<br/>for nested AD Groups"]
+    DO_DOWNLOAD -.->|405 error| BUG_664964["🔴 ENG-664964<br/>Config download failed<br/>due to 405 error"]
+    NOTIFY -.->|Clients stuck| BUG_795746["🔴 ENG-795746<br/>100+ clients unable to<br/>update config after SE enabled"]
+    USER_CONFIG -.->|Gateway mismatch| BUG_846458["🔴 ENG-846458<br/>Android Client UI Gateway<br/>field not aligning with other OSes"]
+
     NO_CHANGE --> USER_CONFIG
     SKIP --> END[End]
     BACKOFF --> END
@@ -1058,6 +1063,10 @@ grep -i "New config version\|config version.*same\|onConfigUpdate\|updateConfig"
 | ENG-671884 | Uninstall status not posted when clientEncryptBranding=1 | macOS | Branding encryption blocks uninstall status POST to MP | S2 | Corner Case |
 | ENG-872456 | 30K+ domain steering config crash | ChromeOS | JSON parser memory limit exceeded with 30K+ domain list | S1 | Corner Case |
 | ENG-693785 | Case-sensitive user/usergroup ID mismatch in steering configs | Backend | Backend uses case-sensitive ID matching, client normalizes to lowercase | S2 | Test Gap |
+| [ENG-596840](https://netskope.atlassian.net/browse/ENG-596840) | Inconsistent Client Configuration Display for Nested AD Groups on Netskope Tenan |
+| [ENG-664964](https://netskope.atlassian.net/browse/ENG-664964) | [Emirates National Oil Company] client config failed to download due to 405 erro |
+| [ENG-795746](https://netskope.atlassian.net/browse/ENG-795746) | [Tier 1/Stellantis]100+ Clients Unable to Update Configuration After Enabling Se |
+| [ENG-846458](https://netskope.atlassian.net/browse/ENG-846458) | [UWV] Android Client UI Gateway Field Not Aligning with Other OSes |
 
 ---
 
