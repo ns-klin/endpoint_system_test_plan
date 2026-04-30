@@ -516,11 +516,11 @@ flowchart TD
     MATCH -->|No| NORMAL["Normal SSL Interception"]
     MATCH -->|Yes| ACTION{Action?}
 
-    ACTION -->|BYPASS (1)| BYPASS["Bypass SSL Interception"]
-    ACTION -->|BLOCK (0)| BLOCK["Block Traffic"]
-    ACTION -->|BMD (2)| DC_CHECK{Device<br/>Managed?}
-    ACTION -->|CUSTOM_DC (3)| LABEL_CHECK{Custom DC<br/>Label Match?}
-    ACTION -->|DECRYPTION (4)| DECRYPT["Attempt Decryption"]
+    ACTION -->|"BYPASS (1)"| BYPASS["Bypass SSL Interception"]
+    ACTION -->|"BLOCK (0)"| BLOCK["Block Traffic"]
+    ACTION -->|"BMD (2)"| DC_CHECK{Device<br/>Managed?}
+    ACTION -->|"CUSTOM_DC (3)"| LABEL_CHECK{Custom DC<br/>Label Match?}
+    ACTION -->|"DECRYPTION (4)"| DECRYPT["Attempt Decryption"]
 
     DC_CHECK -->|Yes| BYPASS
     DC_CHECK -->|No| BLOCK

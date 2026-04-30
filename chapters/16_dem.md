@@ -378,24 +378,24 @@ The tenant ID carried in the config context is critical for event acceptance. EN
 
 ```mermaid
 flowchart TD
-    START["refreshConfig()"] --> SUB_CHK{pdem_subscription_level?}
+    START["refreshConfig"] --> SUB_CHK{pdem_subscription_level?}
 
     SUB_CHK -->|"none"| STOP["stopDemConfigTask<br/>delete dem.json<br/>clear g_demConfig"]
-    SUB_CHK -->|"professional" or "enterprise"| CERT_CHK{User cert available?}
+    SUB_CHK -->|"professional/enterprise"| CERT_CHK{User cert available?}
 
     CERT_CHK -->|No| WAIT["Wait for enrollment<br/>to complete"]
     CERT_CHK -->|Yes| LOAD["loadDemConfig from cache"]
-    LOAD --> REGISTER["Register nsDemConfigTask<br/>with scheduler (3600s)"]
+    LOAD --> REGISTER["Register nsDemConfigTask<br/>with scheduler 3600s"]
 
-    REGISTER --> FETCH["GET /demconfig/<tenant_id>/<email><br/>?os=<os>&deviceclassification=<dc><br/>&fingerprint=<fp>"]
+    REGISTER --> FETCH["GET /demconfig/tenant/email<br/>with os, dc, fingerprint params"]
 
     FETCH -->|HTTP 200| SAVE["saveDemConfig<br/>parse dem.json"]
-    FETCH -->|HTTP error| RETRY{Retry count < 2?}
+    FETCH -->|HTTP error| RETRY{Retry count<br/>under 2?}
     RETRY -->|Yes| FETCH
     RETRY -->|No| FALLBACK["Use cached dem.json"]
 
     SAVE --> CALLBACK["refreshDEMConfig callback"]
-    CALLBACK --> UPDATE["updateDemTasks()"]
+    CALLBACK --> UPDATE["updateDemTasks"]
 
     BUG_637576["🔴 BUG ENG-637576<br/>Config token rotation<br/>resets tenant_id to 0"]
     BUG_431642["🔴 BUG ENG-431642<br/>Route control enabled in client<br/>without backend flags"]
