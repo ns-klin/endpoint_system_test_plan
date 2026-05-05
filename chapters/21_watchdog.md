@@ -1,43 +1,50 @@
 # 21. Watchdog
 
-**Escalation Bug Count**: 3 (cross-referenced) | **Predicted Risks**: 5
+**Escalation Bug Count**: 3 (cross-referenced) | **Predicted Risks**: 3
 
 📋 **[Test Cases — Google Sheet](https://docs.google.com/spreadsheets/d/1ackCZ-EcepXw1BkSGoi5Go9Ex1I72-fXqcqLGMGiuio/edit?gid=442475875#gid=442475875)**
 
-> This chapter covers the Watchdog feature — an automatic service recovery and upgrade resilience mechanism that monitors service health, restarts crashed services, detects aborted upgrades, and cleans up stale kernel resources. The Watchdog operates beyond install/upgrade scope, providing ongoing runtime protection. For Watchdog behavior specifically during install/upgrade, see [01. Installation & Upgrade](01_installation.md#windows-watchdog-in-installupgrade-context).
+> This chapter covers the Watchdog (stAgentSvcMon) — an upgrade resilience mechanism that monitors whether the agent service recovers after an auto-upgrade, and retries aborted MSI installations. The Watchdog runs as a separate usermode process and does not interact with kernel components or the `stadrv` driver. For Watchdog behavior during install/upgrade flow, see [01. Installation & Upgrade](01_installation.md#windows-watchdog-in-installupgrade-context).
 
 ---
 
 ## Overview
 
-The Watchdog feature is a critical reliability mechanism that ensures the Netskope Client service remains operational without user intervention. It addresses three categories of failure:
+The Watchdog (`stAgentSvcMon`) is an upgrade-resilience mechanism that ensures the Netskope Client service comes back online after an auto-upgrade. It addresses one primary failure scenario:
 
-1. **Service crash recovery** — Detects when `stAgentSvc` stops unexpectedly and restarts it within 60 seconds
-2. **Aborted upgrade retry** — Detects incomplete MSI installations (caused by system reboot, power loss, or installer crash) and retries up to 3 times
-3. **Kernel resource cleanup** — A driver-level timer that prevents memory leaks from stale network packets, hash table entries, and PQDN queue items
+1. **Aborted upgrade recovery** — Detects that `stAgentSvc` is not running after an upgrade attempt (system reboot, power loss, or installer crash), and retries the MSI installation
 
-The Watchdog is Windows-specific at the service level because macOS uses `launchd` (KeepAlive=true) and Linux uses `systemd` (Restart=always) which provide built-in restart mechanisms. The driver-level watchdog operates in the Windows kernel across all deployment scenarios.
+The Watchdog is created dynamically during auto-upgrade: the agent service copies its own binary (`stAgentSvc.exe`) to a new file (`stAgentSvcMon.exe`), registers it as a Windows service named `stAgentSvcMon`, and starts it. This monitor process uses the same codebase but runs in monitor mode via the `-monitor` command-line argument. It is a completely separate process from the agent service.
 
-The highest risks are: **infinite restart loop** when a service has a startup crash bug (no rate limiting), **AOAC zombie state** where the service reports as RUNNING but has stale network handles after Modern Standby wake, and **race condition** between the Watchdog and MSI installer if the upgrade registry flag is not set before the service stops.
+**Critical design facts**:
+- `stAgentSvcMon` does **not** communicate with the `stadrv` driver — only `stAgentSvc` connects to `stadrv` for packet steering
+- The Watchdog uses standard OS timers in usermode — there is no driver-level timer or kernel component involved
+- The Watchdog is **not** a continuous health monitor — it exists only during and after auto-upgrade to ensure the upgrade completes
+
+The Watchdog is Windows-specific because macOS uses `launchd` (KeepAlive=true) and Linux uses `systemd` (Restart=always) which provide built-in restart mechanisms. Neither platform has an equivalent upgrade-retry mechanism.
 
 ---
 
 ## Watchdog Architecture (All Platforms)
 
-The Watchdog operates at two levels: a service-level monitor (Windows-specific, integrated into `stAgentSvc`) and a driver-level timer (Windows kernel, inside `Stadrv`). macOS and Linux rely on OS-native service managers for crash recovery, so their "watchdog" equivalent is the platform's service restart policy.
+The Watchdog operates purely in usermode. On Windows, it is a temporary monitor service (`stAgentSvcMon.exe`) created during auto-upgrade. macOS and Linux rely on OS-native service managers for crash recovery but have no equivalent upgrade-retry mechanism.
 
 ```mermaid
 flowchart TD
-    subgraph WINDOWS["Windows: Integrated Watchdog"]
-        SVC["stAgentSvc Process"]
-        SVC --> WD_T["Watchdog Thread<br/>60s interval"]
-        SVC --> UPG_T["Upgrade Monitor Thread<br/>60min interval"]
-        SVC --> DRV["Stadrv Driver"]
-        DRV --> DRV_WD["Driver Watchdog Timer<br/>500ms interval"]
+    subgraph WINDOWS["Windows: stAgentSvcMon (Upgrade Monitor)"]
+        MON["stAgentSvcMon.exe<br/>(same binary as stAgentSvc, renamed)<br/>Runs with -monitor arg"]
+        MON --> WAIT["Wait 60 min timeout<br/>(WaitForMultipleObjects)"]
+        MON --> LOGON["On user logon event"]
 
-        WD_T -->|Detects STOPPED| RESTART["Restart Service"]
-        UPG_T -->|Detects aborted MSI| RETRY["Retry Upgrade<br/>(max 3)"]
-        DRV_WD -->|Cleans up| CLEANUP["Stale packets<br/>Hash entries<br/>PQDN queue"]
+        WAIT -->|Timeout| CHECK["exitOnTimeout()<br/>Check stAgentSvc state"]
+        LOGON -->|First logon| ABORTED_CHK["isLastMsiInstallAborted()"]
+    end
+
+    subgraph AGENT["Windows: stAgentSvc (Separate Process)"]
+        SVC["stAgentSvc.exe"]
+        SVC -->|Auto-upgrade triggers| CREATE["startInstallationMonitorService()<br/>Copy binary → stAgentSvcMon.exe<br/>Register + start service"]
+        SVC -->|Upgrade complete| STOP_MON["stopInstallationMonitorService()<br/>Stop + delete service + file"]
+        SVC -->|Packet steering only| DRV["stadrv Driver"]
     end
 
     subgraph MACOS["macOS: OS-Native Recovery"]
@@ -53,166 +60,142 @@ flowchart TD
 
 **Component Summary**:
 
-| Component | Platform | Location | Interval | Purpose |
-|---|---|---|---|---|
-| Watchdog Thread | Windows | `stAgentSvcEx.cpp::ThreadWatchdog()` | 60 seconds | Service crash detection + restart |
-| Upgrade Monitor Thread | Windows | `stAgentSvcEx.cpp::ThreadUpgradeMonitor()` | 60 minutes | Aborted upgrade detection + retry |
-| Driver Watchdog Timer | Windows | `stadrv/common/source/timer.c::WatchdogTimerDpc()` | 500 ms | Kernel resource cleanup |
-| Feature Flag | Windows | `stAgentSvcEx.cpp::GetWatchdogMonitorEnabledFlag()` | — | Enables/disables integrated watchdog |
-| launchd KeepAlive | macOS | `com.netskope.client.stAgentSvc.plist` | OS-managed | Daemon auto-restart |
-| systemd Restart | Linux | `stagentd.service` | 10 seconds | Daemon auto-restart |
+| Component | Platform | Location | Purpose |
+|---|---|---|---|
+| stAgentSvcMon service | Windows | `stAgentSvcMon.exe` (copied from `stAgentSvc.exe`) | Upgrade resilience: retry aborted MSI |
+| `startInstallationMonitorService()` | Windows | `lib/nsUtils/packageUtils.cpp` | Creates and starts monitor service before upgrade |
+| `stopInstallationMonitorService()` | Windows | `lib/nsUtils/packageUtils.cpp` | Stops and removes monitor service after upgrade |
+| `exitOnTimeout()` | Windows | `stAgent/stAgentSvc/stAgentSvcEx.cpp` | 60-min check: if stAgentSvc is running, stop self; if not, retry |
+| `isLastMsiInstallAborted()` | Windows | `lib/nsUtils/packageUtils.cpp` | Checks registry for UpgradeInProgress flag |
+| `isClientUpgradeInProgress()` | Windows | `lib/nsUtils/osUtils.cpp` | Checks UpgradeInProgress registry value |
+| launchd KeepAlive | macOS | `com.netskope.client.stAgentSvc.plist` | Daemon auto-restart |
+| systemd Restart | Linux | `stagentd.service` | Daemon auto-restart |
 
 ---
 
 ## Windows
 
-**Cross-Referenced Bugs**: 3 | **Key Gaps**: No crash rate limiting, AOAC health check missing, retry counter not persisted
+**Cross-Referenced Bugs**: 3 | **Key Gaps**: Retry counter reset on reboot, no notification on max retries, upgrade race condition
 
-Windows is the only platform with a custom Watchdog implementation because Windows Service architecture (Session 0 isolation, SC Manager) requires explicit monitoring. The Watchdog Thread and Upgrade Monitor Thread both run inside the main `stAgentSvc` process, controlled by a feature flag that allows gradual rollout and backward compatibility with the legacy `stAgentSvcMon` monitor service.
+Windows is the only platform with the `stAgentSvcMon` upgrade monitor because Windows Service architecture (Session 0 isolation, SC Manager) requires explicit handling of upgrade failures across system reboots.
 
-### Windows Service-Level Watchdog Flow
+### Lifecycle
 
-The Watchdog Thread checks service status every 60 seconds. It starts with a 60-second initialization delay to avoid false positives during service startup. The critical design constraint is the `isClientUpgradeInProgress()` check — without it, the Watchdog would restart the old service during MSI upgrades, causing upgrade failures.
+The monitor service has a well-defined lifecycle:
 
-```mermaid
-flowchart TD
-    START["stAgentSvc Start"] --> FLAG{Feature Flag<br/>Enabled?}
+1. **Creation**: When `stAgentSvc` triggers auto-upgrade, `startInstallationMonitorService()` copies the binary to `stAgentSvcMon.exe`, registers it with `SERVICE_AUTO_START`, creates the `UpgradeInProgress` registry key, and starts the service
+2. **Running**: `stAgentSvcMon` enters its event loop with a 60-minute timeout, waiting for logon/exit/timeout events
+3. **Self-termination (success)**: On timeout, if `stAgentSvc` is already `SERVICE_RUNNING`, the monitor calls `onStop()` and changes its own start type to `SERVICE_DEMAND_START` (so it won't restart on next boot)
+4. **Retry (failure)**: On timeout or logon, if `stAgentSvc` is NOT running, it retries the MSI install
+5. **Cleanup**: After successful upgrade, `stAgentSvc` calls `stopInstallationMonitorService()` which stops the service, deletes it from SCM, and removes the `stAgentSvcMon.exe` file
 
-    FLAG -->|Yes| INIT["Start Watchdog Thread<br/>+ Upgrade Monitor Thread"]
-    FLAG -->|No| LEGACY["Use Legacy stAgentSvcMon<br/>Monitor Service"]
+### Monitor Service Event Loop
 
-    INIT --> DELAY["Initial 60s Delay<br/>Wait for service init"]
-    DELAY --> LOOP["Check Every 60 Seconds"]
-
-    LOOP --> UPGRADE_CHECK{Upgrade<br/>In Progress?}
-    UPGRADE_CHECK -->|Yes - registry flag| SKIP["Skip This Cycle"]
-    UPGRADE_CHECK -->|No| EXIST_CHECK{Service Exists?}
-
-    EXIST_CHECK -->|No| LOG_THROTTLE["Log Error<br/>Throttled every 100 cycles"]
-    EXIST_CHECK -->|Yes| STATE_CHECK{Service State?}
-
-    STATE_CHECK -->|RUNNING| HEALTHY["Healthy<br/>Reset log counter"]
-    STATE_CHECK -->|STOPPED| CRASH_DETECT["Crash Detected<br/>Restart Service"]
-    STATE_CHECK -->|PENDING| TRANSIENT["Ignore transient state"]
-
-    CRASH_DETECT --> RISK_LOOP["🟡 Warning: No crash rate limiting<br/>Infinite restart loop possible"]
-    HEALTHY --> AOAC_CHECK{AOAC Wake?}
-    AOAC_CHECK -->|Running but<br/>network dead| RISK_AOAC["🟡 Warning: Zombie service<br/>Watchdog sees RUNNING but<br/>tunnel is DOWN"]
-    AOAC_CHECK -->|Normal| LOOP
-
-    SKIP --> LOOP
-    LOG_THROTTLE --> LOOP
-    HEALTHY --> LOOP
-    TRANSIENT --> LOOP
-    CRASH_DETECT --> LOOP
-
-    UPGRADE_CHECK -.->|MSI crash before<br/>registry flag set| RISK_RACE["🟡 Warning: Race condition<br/>Watchdog restarts old service<br/>during upgrade attempt"]
-```
-
-**Service State Handling**:
-
-| Windows Service State | Watchdog Action | Rationale |
-|---|---|---|
-| `SERVICE_RUNNING` | No action, reset counters | Service is healthy |
-| `SERVICE_STOPPED` | Restart immediately | Service crashed — primary recovery path |
-| `SERVICE_START_PENDING` | Ignore | Service is starting, don't interfere |
-| `SERVICE_STOP_PENDING` | Ignore | Service is stopping (may be intentional) |
-| Service not found | Log error (throttled) | Service was uninstalled — don't restart |
-
-**Key Code**: `stAgent/stAgentSvc/stAgentSvcEx.cpp` — `ThreadWatchdog()` (service monitoring), `isClientUpgradeInProgress()` (registry flag check), `nsWinServiceControl::IsServiceRunning()` / `IsServiceStopped()` / `IsServiceExist()`
-
-### Windows Upgrade Monitor Flow
-
-The Upgrade Monitor Thread runs alongside the Watchdog Thread but at a much lower frequency (every 60 minutes). Its purpose is to detect upgrades that were interrupted by system reboot, power loss, or installer crash. On detection, it retries the upgrade up to 3 times.
-
-A critical gap: the retry counter (`relaunch_count`) is a local variable, not persisted to the registry. This means a system reboot resets the counter, potentially allowing unlimited retries across reboots if the upgrade consistently fails.
+The monitor service uses the same `Run()` function as the agent service but with `m_bIsMonitorSvc = true`, which sets the `WaitForMultipleObjects` timeout to 60 minutes (vs. `INFINITE` for the agent service). The three events monitored are: exit, logon, and logoff.
 
 ```mermaid
 flowchart TD
-    START["Upgrade Monitor Thread Start"] --> BOOT_CHECK{Last MSI Install<br/>Aborted?}
+    START["stAgentSvcMon starts<br/>same binary, -monitor arg"] --> INIT["OnInit - isMonitorSvc=true<br/>m_bIsMonitorSvc = true"]
+    INIT --> CFG["config.setInstallMonitorService<br/>config.initConfigLocation<br/>config.readConfigFile"]
+    CFG --> TIMEOUT_SET["Set timeout = 60 minutes"]
 
-    BOOT_CHECK -->|Yes| IMMEDIATE_RETRY["Immediate Retry<br/>relaunch_count++"]
-    BOOT_CHECK -->|No| WAIT["Wait 60 Minutes"]
+    TIMEOUT_SET --> LOGON_CHECK{User already<br/>logged in?}
+    LOGON_CHECK -->|Yes| SET_LOGON["SetEvent - m_logonEvent"]
+    LOGON_CHECK -->|No| LOOP
 
-    IMMEDIATE_RETRY --> MSI_MONITOR["Start MSI Install<br/>Monitor Thread"]
+    SET_LOGON --> LOOP["WaitForMultipleObjects<br/>exit, logon, logoff, 60min timeout"]
 
-    WAIT --> PERIODIC_CHECK{Last MSI Install<br/>Aborted?}
-    PERIODIC_CHECK -->|Yes| COUNT_CHECK{Retry Count<br/>Below 3?}
-    COUNT_CHECK -->|Yes| RETRY["Retry Upgrade"]
-    COUNT_CHECK -->|No| GIVE_UP["Max Retries Reached<br/>Stop Retrying"]
-    PERIODIC_CHECK -->|No| WAIT
+    LOOP -->|Exit event| EXIT["onStop - stopMsiInstallMonitorThread"]
+    LOOP -->|Logon event| ON_LOGON["onLogon - monitor path"]
+    LOOP -->|Timeout 60 min| ON_TIMEOUT["exitOnTimeout"]
 
-    RETRY --> MSI_MONITOR
-    MSI_MONITOR --> WAIT
+    ON_LOGON --> LOGON_ABORT{First init AND<br/>isLastMsiInstallAborted?}
+    LOGON_ABORT -->|Yes| LAUNCH_MSI["m_msiLaunchCnt++<br/>startMsiInstallMonitorThread"]
+    LOGON_ABORT -->|No| LOOP
 
-    IMMEDIATE_RETRY --> RISK_PERSIST["🟡 Warning: relaunch_count is local variable<br/>Not persisted to registry<br/>Reboot resets counter to 0"]
-    GIVE_UP --> RISK_NEVER["🟡 Warning: Counter may never reach 3<br/>if reboots happen between retries"]
+    ON_TIMEOUT --> SVC_STATUS{queryServiceStatus<br/>stAgentSvc?}
+    SVC_STATUS -->|SERVICE_RUNNING| SUCCESS["onStop<br/>Change self to DEMAND_START<br/>Exit loop"]
+    SVC_STATUS -->|Not running| RETRY_CHECK{m_msiLaunchCnt below 2?}
+    RETRY_CHECK -->|Yes| RETRY["startMsiInstallMonitorThread<br/>m_msiLaunchCnt++<br/>Continue loop"]
+    RETRY_CHECK -->|No| GIVE_UP["Exit loop<br/>max retries reached"]
+
+    LAUNCH_MSI --> LOOP
+    RETRY --> LOOP
+
+    RETRY_CHECK -.-> RISK_PERSIST["🟡 Warning: m_msiLaunchCnt is local variable<br/>System reboot resets counter<br/>allowing unlimited retries across reboots"]
 ```
 
-**Registry Markers Used**:
+**Key Design Points**:
 
-| Registry Path | Purpose |
+| Aspect | Detail |
 |---|---|
-| `HKLM\SOFTWARE\Netskope\STAgent\UpgradeInProgress` | Set by MSI before upgrade, checked by Watchdog Thread |
-| `HKLM\SOFTWARE\Netskope\STAgent\LastMsiInstallAborted` | Set when MSI install is interrupted, checked by Upgrade Monitor |
+| Timeout | 60 minutes (`60 * 60 * 1000` ms) |
+| Retry limit | `m_msiLaunchCnt < 2` in `exitOnTimeout()` (2 retries max from timeout path) |
+| Registry retry limit | `UpgradeInProgress` value incremented each retry, stops at `value >= 3` |
+| PreShutdown handling | Waits up to 90 seconds if upgrade in progress before allowing shutdown |
+| Self-cleanup | Changes own start type to `SERVICE_DEMAND_START` on success |
 
-**Key Code**: `stAgent/stAgentSvc/stAgentSvcEx.cpp` — `ThreadUpgradeMonitor()`, `isLastMsiInstallAborted()`, `startMsiInstallMonitorThread()`
+### Registry Markers
 
-### Windows Driver-Level Watchdog
+| Registry Path | Value | Purpose | Set By |
+|---|---|---|---|
+| `HKLM\SOFTWARE\Netskope\UpgradeInProgress` | DWORD (1-3) | Tracks retry count; MSI retried while value < 3 | `startInstallationMonitorService()` sets to 1; `isLastMsiInstallAborted()` increments |
+| `HKLM\SOFTWARE\Netskope\InstallPath` | REG_SZ | Install directory for locating `stAgentSvc.exe` | MSI installer |
 
-The driver-level watchdog operates in the Windows kernel as a Deferred Procedure Call (DPC) timer. Unlike the service-level watchdog that monitors process health, the driver watchdog prevents kernel memory leaks by cleaning up stale resources every 500 milliseconds.
-
-Under high network load, the DPC timer can be delayed because network packet processing DPCs have higher priority, potentially allowing stale packets to accumulate and cause kernel memory exhaustion.
-
-```mermaid
-flowchart TD
-    TIMER_START["WatchdogTimerStart<br/>500ms interval"] --> DPC["WatchdogTimerDpc"]
-
-    DPC --> PKT_CLEANUP["Timeout Pending Tunnel Packets<br/>Age out stale packets"]
-    DPC --> HASH_CLEANUP["Hash Complete Pending Deletion<br/>Remove pending hash entries"]
-
-    DPC --> COUNTER_CHECK{Every 10 Seconds?}
-    COUNTER_CHECK -->|Yes| PQDN["RemoveInactiveQItem<br/>Clean PQDN queue"]
-    COUNTER_CHECK -->|No| RESTART_CHECK
-
-    PQDN --> RESTART_CHECK{Driver Unloading?}
-    RESTART_CHECK -->|No| TIMER_START
-    RESTART_CHECK -->|Yes| STOP["Timer Stopped"]
-
-    PKT_CLEANUP --> RISK_STARVATION["🟡 Warning: DPC priority starvation<br/>Under high load, timer may be<br/>delayed → stale packets accumulate"]
-```
-
-**Resource Cleanup Schedule**:
-
-| Resource | Cleanup Interval | Risk if Not Cleaned |
-|---|---|---|
-| Pending tunnel packets | 500ms | Kernel memory leak, eventual BSOD |
-| Hash table pending deletions | 500ms | Stale entries consuming pool memory |
-| Inactive PQDN queue items | 10 seconds | Memory growth from DNS resolution cache |
-
-**Key Code**: `stAgent/stadrv/common/source/timer.c` — `WatchdogTimerDpc()`, `WatchdogTimerStart()`
+**Key Code References**:
+- `lib/nsUtils/packageUtils.cpp::startInstallationMonitorService()` — Creates monitor service
+- `lib/nsUtils/packageUtils.cpp::stopInstallationMonitorService()` — Stops and removes monitor service
+- `lib/nsUtils/packageUtils.cpp::isLastMsiInstallAborted()` — Checks UpgradeInProgress registry, increments counter
+- `lib/nsUtils/packageUtils.cpp::relaunchLastAbortedMsiInstall()` — Thread that re-runs MSI install
+- `lib/nsUtils/osUtils.cpp::isClientUpgradeInProgress()` — Checks UpgradeInProgress > 0
+- `stAgent/stAgentSvc/stAgentSvcEx.cpp::exitOnTimeout()` — 60-min timeout handler
+- `stAgent/stAgentSvc/win/stAgentSvc.cpp::Run()` — Event loop with timeout for monitor mode
+- `lib/nsWinSvc/nsWinSvc.cpp::ParseStandardArgs()` — Handles `-monitor` argument
 
 ### Windows Use Cases
 
-#### AOAC (Modern Standby) Recovery
+#### Normal Auto-Upgrade (Happy Path)
 
-When a Windows 11 laptop enters Modern Standby, the service continues in a low-power state but network handles may become stale. On wake, the service may crash due to invalid network state. The Watchdog detects the `STOPPED` state and restarts the service within 60 seconds, restoring tunnel connectivity.
+1. `stAgentSvc` receives new version from management plane
+2. `startInstallationMonitorService()` copies binary to `stAgentSvcMon.exe`, creates service, sets `UpgradeInProgress=1`
+3. MSI installer starts, stops `stAgentSvc`, installs new version, starts `stAgentSvc`
+4. New `stAgentSvc` starts, calls `stopInstallationMonitorService()` → stops + deletes `stAgentSvcMon`, deletes `UpgradeInProgress` registry, deletes `stAgentSvcMon.exe` file
+5. Alternatively: `stAgentSvcMon` timeout fires, sees `stAgentSvc` running, changes self to `DEMAND_START` and exits
 
-**Gap**: The Watchdog only checks Windows Service Manager status. If the service process is technically `RUNNING` but has zombie network handles (common after AOAC wake), the Watchdog takes no action. See RISK_AOAC in the flow diagram above.
+#### Upgrade Interrupted by Reboot
 
-**Related Bug**: ENG-726784 — AOAC upgrade creates duplicate device entries, indicating AOAC device UID generation issues that the Watchdog does not address.
+1. Auto-upgrade starts, `stAgentSvcMon` is running with `SERVICE_AUTO_START`
+2. System reboots during MSI install
+3. On boot, `stAgentSvcMon` starts automatically (AUTO_START)
+4. On user logon → `onLogon()` → `isLastMsiInstallAborted()` → `UpgradeInProgress` exists and value < 3 → increments value → launches MSI retry
+5. If retry succeeds, new `stAgentSvc` cleans up the monitor service
+6. If retry fails, next timeout (60 min) tries again up to `m_msiLaunchCnt < 2`
 
-#### Third-Party Software Conflict
+#### Upgrade Fails Repeatedly
 
-When antivirus software blocks the Netskope driver from loading, `stAgentSvc` crashes on startup. The Watchdog continuously restarts the service every 60 seconds. While this ensures the service recovers immediately once the conflict is resolved (e.g., after whitelisting), it also means the system runs a crash-restart loop that consumes CPU until the conflict is addressed.
+1. MSI consistently fails (e.g., corrupted package, disk full)
+2. `isLastMsiInstallAborted()` increments `UpgradeInProgress` each retry → at value 3, returns false (no more retries)
+3. `exitOnTimeout()` also caps at `m_msiLaunchCnt >= 2` (but this counter resets on reboot)
 
-#### VDI/RDS Multi-User Environment
+**Gap**: The registry-based counter persists across reboots (correct), but the in-memory `m_msiLaunchCnt` counter in `exitOnTimeout()` resets on reboot. The two mechanisms overlap but don't fully coordinate — the registry counter caps at 3 total attempts, while `m_msiLaunchCnt` caps at 2 per boot cycle.
 
-On Windows Server RDS with many concurrent user sessions, a single `stAgentSvc` crash affects all users. The Watchdog restarts the service within 60 seconds, minimizing downtime from hours (manual restart) to under 2 minutes (automatic). Each user session's UI (`stAgentUI`) reconnects independently after the service restarts.
+### PreShutdown Handling
+
+When Windows sends `SERVICE_CONTROL_PRESHUTDOWN` to `stAgentSvcMon`, the handler checks `isClientUpgradeInProgress()`. If an upgrade is active, it waits up to 90 seconds (30 iterations × 3000ms) before allowing shutdown, giving the MSI install time to complete.
+
+```mermaid
+flowchart TD
+    PRESHUTDOWN["SERVICE_CONTROL_PRESHUTDOWN received"] --> CHECK{isClientUpgradeInProgress?}
+    CHECK -->|Yes| WAIT["Wait up to 90 seconds<br/>30 x 3s iterations<br/>SetStatusAndSleepTimeout 3000ms"]
+    CHECK -->|No| STOP["Proceed to OnPreShutdown"]
+    WAIT -->|Upgrade completes or timeout| STOP
+```
+
+---
 
 ## macOS
 
-macOS does not have a custom Watchdog implementation. Instead, it relies on `launchd`'s built-in `KeepAlive=true` directive, which automatically restarts the daemon if it exits. launchd includes built-in rate limiting to prevent crash loops.
+macOS does not have a custom Watchdog or upgrade monitor. It relies on `launchd`'s built-in `KeepAlive=true` directive for crash recovery. launchd includes built-in rate limiting to prevent crash loops.
 
 **macOS Service Recovery**:
 
@@ -223,7 +206,10 @@ macOS does not have a custom Watchdog implementation. Instead, it relies on `lau
 | `nsAuxiliarySvc` | launchd `KeepAlive=true` | launchd built-in |
 | System Extension | NE framework managed | OS-managed |
 
-**Key Difference from Windows**: launchd manages the entire restart lifecycle including rate limiting, so the risks of infinite crash loops and resource exhaustion are handled by the OS. However, launchd does not have an equivalent of the Upgrade Monitor — aborted upgrades are not automatically retried.
+**Key Differences from Windows**:
+- launchd manages crash recovery with built-in rate limiting
+- No upgrade monitor equivalent — aborted upgrades are not automatically retried
+- No registry-based retry counter mechanism
 
 For macOS service verification, see [01. Installation & Upgrade — macOS Verification Checklist](01_installation.md#macos-verification-checklist).
 
@@ -231,7 +217,7 @@ For macOS service verification, see [01. Installation & Upgrade — macOS Verifi
 
 ## Linux
 
-Linux relies on `systemd` for service recovery. The `stagentd.service` unit is configured with `Restart=always` and a 10-second restart delay, providing automatic crash recovery with built-in rate limiting via systemd's `StartLimitBurst` and `StartLimitIntervalSec` defaults.
+Linux relies on `systemd` for service crash recovery. The `stagentd.service` unit is configured with `Restart=always` and a 10-second restart delay, providing automatic recovery with built-in rate limiting via systemd's `StartLimitBurst` and `StartLimitIntervalSec` defaults.
 
 **Linux Service Recovery**:
 
@@ -240,7 +226,9 @@ Linux relies on `systemd` for service recovery. The `stagentd.service` unit is c
 | `stagentd.service` | `always` | 10 seconds | systemd default (5 starts per 10 seconds) |
 | `stagentapp.service` | `on-failure` | 5 seconds | systemd default |
 
-**Key Difference from Windows**: Like macOS, Linux has no Upgrade Monitor equivalent. The `.run` auto-upgrade script handles its own retry logic but does not detect aborted upgrades across reboots.
+**Key Differences from Windows**:
+- No upgrade monitor equivalent
+- The `.run` auto-upgrade script handles its own retry logic but does not detect aborted upgrades across reboots
 
 For Linux service verification, see [01. Installation & Upgrade — Linux Verification Checklist](01_installation.md#linux-verification-checklist).
 
@@ -248,43 +236,46 @@ For Linux service verification, see [01. Installation & Upgrade — Linux Verifi
 
 ## Cross-Flow Interactions
 
-### Watchdog + FailClose Interaction
+### Upgrade Monitor + Service Protection Interaction
 
-When FailClose is active and the service crashes, the Watchdog restarts the service. During the 60-second detection window, FailClose may activate (blocking all traffic) if the driver detects the service is not running. After Watchdog restarts the service, FailClose should deactivate once the tunnel reconnects. The risk is that FailClose enters a stuck state during the crash-restart cycle.
+When service protection (`disableWinStopServiceProtection`) is enabled, the MSI installer must use a time-based token and global event mechanism to stop `stAgentSvc`. The monitor service passes `config.getSelfProtectionEnabled()` to `relaunchLastAbortedMsiInstall()` which affects how the MSI is relaunched.
 
-### Watchdog + Tunnel Reconnect Interaction
+### Upgrade Monitor + FailClose Interaction
 
-After Watchdog restarts the service, the tunnel management module must re-establish the connection. If the tunnel enters a reconnect backoff loop (exponential backoff up to the maximum interval), the user may experience extended downtime despite the Watchdog restarting the service quickly.
+During the upgrade window (between `stAgentSvc` stopping for upgrade and the new version starting), FailClose may activate if the driver detects the service is not running. After the monitor retries the upgrade and the new service starts, FailClose should deactivate once the tunnel reconnects. The risk is extended FailClose blocking if the upgrade repeatedly fails.
 
-### Cross-Flow Risk Matrix (Watchdog-Relevant)
+### PreShutdown + Upgrade Race
+
+If the system is shutting down while an MSI install is in progress, the monitor's PreShutdown handler gives the install up to 90 seconds to complete. If the MSI does not finish in time, the upgrade is aborted and retried on next boot.
+
+### Cross-Flow Risk Matrix
 
 | Interaction | Risk | Severity | Test Priority |
 |---|---|---|---|
-| Watchdog restart + FailClose active | FailClose stuck in blocking state during restart | **S1** | P1 |
-| Watchdog restart + Tunnel reconnect backoff | Extended downtime despite fast restart | **S2** | P2 |
-| Watchdog + MSI upgrade race | Watchdog restarts old service, blocking upgrade | **S2** | P1 |
-| AOAC wake + Watchdog health check gap | Zombie service not detected | **S2** | P2 |
-| Driver watchdog + high load | Kernel memory leak from delayed cleanup | **S2** | P2 |
+| Upgrade retry + FailClose active | Extended network blocking during repeated failed upgrades | **S1** | P1 |
+| Monitor + Service Protection | MSI retry may fail if service protection blocks stop operation | **S2** | P1 |
+| Reboot during upgrade + counter mismatch | Registry counter (3 max) vs in-memory counter (2 max) not coordinated | **S2** | P2 |
+| PreShutdown + slow MSI | 90-second deadline may not be enough for large installs | **S3** | P3 |
+
+---
 
 ## Appendix A: Bug Quick Reference
 
-> **Note**: Watchdog is an unreleased feature — there are no escalation bugs caused by the Watchdog itself. The bugs listed below are **cross-referenced interaction risks**: existing escalation bugs from other features whose failure scenarios overlap with Watchdog's operational flow. These are included to identify scenarios that Watchdog must handle correctly to avoid triggering or amplifying known failure patterns.
+> **Note**: Watchdog (stAgentSvcMon) is an existing feature but there are no escalation bugs caused by the monitor service itself. The bugs listed below are **cross-referenced interaction risks**: existing escalation bugs from other features whose failure scenarios overlap with the monitor service's operational flow.
 
-| Bug ID | Problem Summary | Root Cause | Watchdog Relevance | Platform |
-|--------|----------------|-----------|-------------------|----------|
-| **ENG-726784** | AOAC upgrade creates duplicate device entries | AOAC devices not tested for install/upgrade; device UID generation falls back to legacy method | Watchdog AOAC recovery may trigger duplicate device ID if UID generation is not idempotent | Windows |
-| **ENG-733657** | R126→R129 auto-upgrade failure | Post R125 must enable `disableWinStopServiceProtection: true` flag | Watchdog must not interfere with upgrade; `isClientUpgradeInProgress()` is the critical gate | Windows |
-| **ENG-446703** | MSI file pile-up | Residual MSI files not cleaned after install failure | Upgrade Monitor retries may compound MSI pile-up if cleanup is insufficient | Windows |
+| Bug ID | Problem Summary | Root Cause | Monitor Service Relevance | Platform |
+|--------|----------------|-----------|--------------------------|----------|
+| **ENG-726784** | AOAC upgrade creates duplicate device entries | AOAC devices not tested for install/upgrade; device UID generation falls back to legacy method | If monitor retries upgrade during AOAC wake, duplicate device IDs may be generated | Windows |
+| **ENG-733657** | R126→R129 auto-upgrade failure | Post R125 must enable `disableWinStopServiceProtection: true` flag | Monitor's MSI retry will also fail if service protection blocks the upgrade | Windows |
+| **ENG-446703** | MSI file pile-up | Residual MSI files not cleaned after install failure | `relaunchLastAbortedMsiInstall()` copies MSI to UUID-named file each retry; repeated failures accumulate files | Windows |
 
 **Predicted Risk Summary**:
 
 | Risk | Severity | Description | Recommended Fix |
 |------|----------|-------------|----------------|
-| Infinite restart loop | 🟡 High | No crash rate limiting in Watchdog Thread | Add crash count + cooldown (e.g., pause after 5 crashes in 5 minutes) |
-| AOAC zombie state | 🟡 High | Watchdog only checks SC Manager status, not actual service health | Add internal health ping after AOAC wake detection |
-| Retry counter not persisted | 🟡 Medium | `relaunch_count` is local variable, reset on reboot | Persist counter in registry |
-| Log throttle mismatch | 🟢 Low | Code comment says "30 min" but actual throttle is ~100 min | Fix comment to match code |
-| DPC timer starvation | 🟡 High | Driver watchdog DPC delayed under high network load | Monitor DPC latency; consider higher-priority timer |
+| Retry counter not coordinated | 🟡 High | Registry counter (caps at 3) and in-memory `m_msiLaunchCnt` (caps at 2, resets on reboot) overlap without coordination | Rely solely on registry counter; remove in-memory limit or sync them |
+| MSI file pile-up on retry | 🟡 Medium | Each retry in `relaunchLastAbortedMsiInstall()` copies MSI to new UUID-named file without cleaning previous copies | Add cleanup of failed MSI copies before retry |
+| No failure notification | 🟡 Medium | When max retries are exhausted, no notification is sent to user or management plane | Post upgrade-failed status message when retries are exhausted |
 
 ---
 
